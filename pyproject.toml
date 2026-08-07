@@ -21,6 +21,7 @@ dependencies = [
 
 [project.scripts]
 goofish-omni = "goofish_omni.cli:app"
+goofish-omni-mcp = "goofish_omni.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]
