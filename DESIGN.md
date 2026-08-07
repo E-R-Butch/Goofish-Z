@@ -1,4 +1,4 @@
-# goofish-omni — 闲鱼全功能整合包
+# goofish-z — 闲鱼全功能整合包
 
 > 博采众长：goofish-cli（CLI/MCP/registry 架构）+ XianYuApis（refresh_token 自动维持）
 > + ai-goofish-monitor（监控/UI 思路）。一库双驱：GUI 可点，Agent 可调。
@@ -76,9 +76,9 @@
 ## 项目结构
 
 ```
-goofish-omni/
+goofish-z/
 ├── pyproject.toml
-├── src/goofish_omni/
+├── src/goofish_z/
 │   ├── core/       # sign/session/limiter/guard/registry
 │   ├── commands/   # auth/item/search/message/watch/media/location
 │   ├── api/        # FastAPI app + routes

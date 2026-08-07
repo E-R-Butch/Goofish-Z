@@ -1,4 +1,4 @@
-# goofish-omni
+# goofish-z
 
 闲鱼全功能整合包 — **GUI + Agent 双驱动**。
 
@@ -8,31 +8,31 @@
 
 | 通道 | 入口 | 状态 |
 |---|---|---|
-| CLI | `goofish-omni <ns> <cmd>` | ✅ |
-| HTTP API | `python -m goofish_omni.api.app` → :8787 | ✅ |
-| MCP | `goofish-omni-mcp` | ✅ (watch 通；search 见已知问题) |
+| CLI | `goofish-z <ns> <cmd>` | ✅ |
+| HTTP API | `python -m goofish_z.api.app` → :8787 | ✅ |
+| MCP | `goofish-z-mcp` | ✅ (watch 通；search 见已知问题) |
 
 ## 快速开始
 
 ```bash
 # 安装
-cd ~/Documents/Projects/goofish-omni
+cd ~/Documents/Projects/goofish-z
 /opt/homebrew/bin/python3.14 -m venv .venv
 .venv/bin/pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -e .
 
-# 认证（从 Chrome 自动抓 cookie，或复制 ~/.goofish-cli/cookies.json 到 ~/.goofish-omni/）
-mkdir -p ~/.goofish-omni && cp ~/.goofish-cli/cookies.json ~/.goofish-omni/ 2>/dev/null
+# 认证（从 Chrome 自动抓 cookie，或复制 ~/.goofish-cli/cookies.json 到 ~/.goofish-z/）
+mkdir -p ~/.goofish-z && cp ~/.goofish-cli/cookies.json ~/.goofish-z/ 2>/dev/null
 
 # CLI
-.venv/bin/goofish-omni search items "DDR3 RECC 32G" --limit 5
+.venv/bin/goofish-z search items "DDR3 RECC 32G" --limit 5
 
 # 价格监控
-.venv/bin/goofish-omni watch add "DDR3 RECC 32G" --max-price 160
-.venv/bin/goofish-omni watch run --all
-.venv/bin/goofish-omni watch history 1
+.venv/bin/goofish-z watch add "DDR3 RECC 32G" --max-price 160
+.venv/bin/goofish-z watch run --all
+.venv/bin/goofish-z watch history 1
 
 # GUI
-.venv/bin/python -m goofish_omni.api.app  # → http://127.0.0.1:8787
+.venv/bin/python -m goofish_z.api.app  # → http://127.0.0.1:8787
 ```
 
 ## 架构
