@@ -179,6 +179,29 @@ def capacity_matches(title: str, required_cap: int | None) -> bool:
     return False  # 有容量但不含目标 → 污染
 
 
+_GENERATION_RE = re.compile(r"(DDR\d)", re.IGNORECASE)
+
+
+def extract_generation(title: str) -> str | None:
+    """从标题提取内存代数（DDR3/DDR4/DDR5）。无 → None。"""
+    m = _GENERATION_RE.search(str(title or ""))
+    if not m:
+        return None
+    return m.group(1).upper()
+
+
+def is_broken_stick(item: dict[str, Any], max_price: float = 50) -> bool:
+    """坏条/报废条特例：代数匹配但标为坏条/报废/坏料/收藏，且价格极低。
+
+    练手/拆件价值的坏条可以保留（如 DDR3 坏条 ¥10）。
+    """
+    title = str(item.get("title", ""))
+    if not any(w in title for w in ("坏条", "报废", "坏料", "收藏摆件", "残次", "点不亮")):
+        return False
+    price = _to_float(item.get("price"))
+    return price is not None and price <= max_price
+
+
 def _unit_price(it: dict[str, Any]) -> float | None:
     """每 GB 价格（元/GB）。无容量或无法解析价格 → None。"""
     price = _to_float(it.get("price"))

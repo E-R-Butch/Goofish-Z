@@ -171,7 +171,12 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True) -> dict[s
 
     # 容量校验：query 含容量（如 32G）时，过滤搜索结果里的异容量污染
     # （闲鱼模糊搜索会把 16G 混进 32G 的结果——2026-08-08 实测 20 条里 3 条污染）
-    from goofish_omni.blacklist import capacity_matches, _extract_capacity
+    from goofish_omni.blacklist import (
+        _extract_capacity,
+        capacity_matches,
+        extract_generation,
+        is_broken_stick,
+    )
 
     req_cap = _extract_capacity(str(query))
     if req_cap:
@@ -181,6 +186,24 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True) -> dict[s
                 filtered.append(it)
             else:
                 it["_cap_mismatch"] = f"搜索{req_cap}G但商品容量不匹配"
+        items = filtered
+
+    # 代数校验：query 含 DDRx 时，代数不匹配的过滤（DDR4 混进 DDR3 搜索）。
+    # 例外：坏条/报废条且价格极低（练手/拆件价值）保留——DDR3 坏条 ¥10 有人买。
+    req_gen = extract_generation(str(query))
+    if req_gen:
+        filtered = []
+        for it in items:
+            gen = extract_generation(str(it.get("title", "")))
+            if gen is None or gen == req_gen:
+                # 代数匹配（或无信息不误杀）。匹配的坏条打标供展示，不参与过滤
+                if gen == req_gen and is_broken_stick(it):
+                    it["_broken_stick"] = True
+                filtered.append(it)
+            else:
+                # 代数不匹配。DDR3 搜索里混进的 DDR4 一律过滤——
+                # 即使标了坏条/报废（买家要的是 DDR3，DDR4 坏条无练手价值）。
+                it["_gen_mismatch"] = f"搜索{req_gen}但商品是{gen}"
         items = filtered
     result: dict[str, Any] = {"items": items, "count": len(items)}
 
