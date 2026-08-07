@@ -116,7 +116,7 @@ def _load_cookies_from_session() -> dict[str, str] | list[dict[str, Any]]:
 async def goofish_page(
     *,
     headless: bool | None = None,
-    viewport: tuple[int, int] = (1440, 900),
+    viewport: tuple[int, int] = (1280, 800),
     cookies: dict[str, str] | None = None,
 ) -> AsyncIterator[Any]:
     """启动系统 Chrome（独立 tmp profile）+ 灌 cookie，yield 出一个 `Page`。
@@ -164,9 +164,53 @@ async def goofish_page(
                 logger.warning(f"注入 cookie 失败：{e}")
 
             page = context.pages[0] if context.pages else await context.new_page()
-            # 隐藏 webdriver 特征（CDP 检测 cookie 外的最后一道门）
+            # 隐藏自动化特征（指纹层）：
+            # 1. navigator.webdriver（已有）
+            # 2. navigator.plugins / languages / hardwareConcurrency（headless 常暴露）
+            # 3. window.chrome 对象（Playwright 启动的 Chrome 可能缺失）
+            # 4. CDP 检测标记（window.cdc_ 等）
             await page.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                """
+                // 1. webdriver 标志
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+
+                // 2. plugins（真实 Chrome 有 PDF 插件）
+                if (navigator.plugins && navigator.plugins.length === 0) {
+                    const fakePlugin = () => ({
+                        name: 'PDF Viewer', filename: 'internal-pdf-viewer',
+                        description: 'Portable Document Format', length: 1,
+                        item: () => null, namedItem: () => null,
+                    });
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [fakePlugin(), fakePlugin(), fakePlugin(), fakePlugin(), fakePlugin()],
+                    });
+                }
+                // languages 补全（中文环境）
+                if (!navigator.languages || navigator.languages.length === 0) {
+                    Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en-US']});
+                }
+                // hardwareConcurrency 常见值 8（Mac 常见）
+                Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+
+                // 3. window.chrome 对象（Playwright 启动有时缺失）
+                if (!window.chrome) {
+                    window.chrome = { runtime: {}, loadTimes: () => ({}), csi: () => ({}) };
+                }
+
+                // 4. CDP 检测痕迹（window.cdc_ 前缀对象）
+                for (const key of Object.keys(window)) {
+                    if (key.startsWith('cdc_')) { delete window[key]; }
+                }
+
+                // 5. Permissions API 打补丁（headless 常被标记）
+                if (window.navigator && window.navigator.permissions && window.navigator.permissions.query) {
+                    const origQuery = window.navigator.permissions.query.bind(window.navigator.permissions);
+                    window.navigator.permissions.query = (p) =>
+                        p && p.name === 'notifications'
+                            ? Promise.resolve({state: Notification.permission})
+                            : origQuery(p);
+                }
+                """
             )
             try:
                 yield page
