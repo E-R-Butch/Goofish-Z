@@ -233,7 +233,9 @@ def is_noise(item: dict[str, Any]) -> str | None:
     # 收购帖是 UNIVERSAL 硬规则——买家是来买东西的，不是看收购广告的
     if is_buying_post(title):
         return "收购帖"
-    # 只做用户要求过的过滤：收购帖（universal）。
+    # 驱动教程（用户明确要求过滤）：魔改驱动/自动发货教程——不是硬件本身
+    if "驱动" in title and ("教程" in title or "自动发货" in title):
+        return "驱动教程"
     # 整机/主机【不】过滤——网吧倒闭/搬家急出等整机打包常有捡漏（用户明确要求保留）
     return None
 
