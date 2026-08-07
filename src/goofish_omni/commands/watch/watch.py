@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from goofish_omni.core.registry import command
 from goofish_omni.db import WatchDB
 
@@ -78,7 +80,8 @@ def watch_history(watch_id: int, limit: int = 50) -> dict[str, Any]:
     description="立即对某监控项执行一次搜索并落盘（或 --all 跑全部启用项）",
     columns=["watch_id", "keyword", "captured", "alerts"],
 )
-def watch_run(watch_id: int | None = None, all: bool = False, limit: int = 20) -> dict[str, Any]:
+def watch_run(watch_id: int | None = None, all: bool = False, limit: int = 20,
+                  enrich_sellers: bool = False) -> dict[str, Any]:
     """执行一次监控轮询。
 
     依赖 search 命令做实际抓取；这里负责调度 + 落盘 + 告警判定。
@@ -106,6 +109,11 @@ def watch_run(watch_id: int | None = None, all: bool = False, limit: int = 20) -
             results.append({"watch_id": w["id"], "keyword": w["keyword"], "error": str(e)})
             continue
 
+        # 层级1优先：默认只用搜索列表字段（价格/地区/badge/标题/降价）过滤。
+        # 卖家昵称补查（层级2/3，有风控代价）仅当显式 --enrich-sellers 才执行。
+        if enrich_sellers:
+            items = _enrich_seller_nicks(items, w)
+
         # 黑名单过滤：屏蔽劣质商家，只对通过的商品落盘+告警
         passed, blocked = bdb.filter_items(items)
         db.record_items(w["id"], passed)
@@ -128,10 +136,101 @@ def watch_run(watch_id: int | None = None, all: bool = False, limit: int = 20) -
                 db.record_alert(w["id"], it, reason)
                 alerts.append({"title": it.get("title", "")[:60], "price": price, "reason": reason})
 
+        # 低价捡漏候选：通过黑名单且被标记低价的商品（不屏蔽，重点提示）
+        bargains = [
+            {"title": it.get("title", "")[:50], "price": it.get("price"),
+             "flag": it.get("_price_flag", "")}
+            for it in passed if it.get("_price_flag")
+        ]
+
         results.append({
             "watch_id": w["id"],
             "keyword": w["keyword"],
-            "captured": len(items),
+            "captured": len(passed),
+            "blocked_count": len(blocked),
+            "bargain_count": len(bargains),
+            "bargains": bargains[:10],
+            "blocked": [
+                {"title": b.get("title", "")[:50], "price": b.get("price"),
+                 "reasons": b.get("_blocked_reasons", [])}
+                for b in blocked[:10]
+            ],
             "alerts": alerts,
         })
     return {"results": results, "ran_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+
+
+def _enrich_seller_nicks(items: list[dict[str, Any]], watch: dict[str, Any]) -> list[dict[str, Any]]:
+    """对搜索结果逐个补查卖家昵称（detail API → seller_nick）。
+
+    仅在存在启用的 seller_nick 规则时执行，避免无谓的 API 请求。
+    每个商品间隔 1.5s，降低触发风控的概率。
+    """
+    from goofish_omni.blacklist import BlacklistDB
+    from goofish_omni.commands.item.view import view as item_view
+    from goofish_omni.core.errors import GoofishError
+
+    bdb = BlacklistDB(Path.home() / ".goofish-omni" / "watch.db")
+    has_seller_rule = any(
+        r["kind"] == "seller_nick" and r["enabled"]
+        for r in bdb.list_rules()
+    )
+    if not has_seller_rule or not items:
+        return items
+
+    import time
+
+    enriched = []
+    for it in items:
+        item_id = str(it.get("item_id", ""))
+        if item_id:
+            try:
+                nick = _fetch_seller_nick_via_page(item_id)
+                if nick:
+                    it["seller_nick"] = nick
+            except GoofishError as e:
+                # 风控/过期：跳过该条补查，保留原数据
+                it.setdefault("_seller_lookup_error", str(e)[:80])
+            except Exception:
+                pass
+            time.sleep(1.5)
+        enriched.append(it)
+    return enriched
+
+
+def _fetch_seller_nick_via_page(item_id: str) -> str:
+    """轻量抓商品详情页文本，解析卖家昵称。
+
+    闲鱼详情页的卖家区块结构：昵称行紧跟信用等级行（如「南山科技 / 卖家信用极好」）。
+    比 item view（等页面内 mtop 就绪）快且稳，也不触发外部 detail API 风控。
+    """
+    import asyncio
+
+    from goofish_omni.core.browser import goofish_page
+
+    JS = """
+(itemId) => {
+  const body = document.body.innerText || '';
+  const lines = body.split('\\n').map(s => s.trim()).filter(Boolean);
+  // 卖家昵称行特征：在「卖家信用*」行的上一行，且不含 ¥ / 想要 / 商品词
+  const creditIdx = lines.findIndex(l => l.startsWith('卖家信用'));
+  if (creditIdx < 0) return '';
+  const nick = lines[creditIdx - 1] || '';
+  // 过滤掉明显不是昵称的（价格、数量词）
+  if (!nick || /^[¥¥0-9]/.test(nick) || nick.includes('想要')) return '';
+  return nick;
+}
+"""
+
+    async def _run() -> str:
+        url = f"https://www.goofish.com/item?id={item_id}"
+        async with goofish_page() as page:
+            await page.goto(url, wait_until="domcontentloaded")
+            await page.wait_for_timeout(3000)
+            return await page.evaluate(JS, item_id) or ""
+
+    try:
+        return asyncio.run(_run())
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[seller] 页面抓取卖家昵称失败 {item_id}: {e}")
+        return ""

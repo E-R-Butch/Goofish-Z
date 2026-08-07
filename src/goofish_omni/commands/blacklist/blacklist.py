@@ -22,7 +22,7 @@ def _db() -> BlacklistDB:
 )
 def blacklist_add(kind: str, value: str, note: str = "") -> dict[str, Any]:
     kind = kind.lower().strip()
-    valid = {"title_keyword", "location", "no_badge", "price_drop"}
+    valid = {"title_keyword", "location", "no_badge", "price_drop", "seller_nick", "price_anomaly"}
     if kind not in valid:
         raise ValueError(f"kind 必须是 {sorted(valid)}")
     if kind == "no_badge":

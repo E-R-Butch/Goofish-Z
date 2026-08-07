@@ -1,10 +1,16 @@
 """黑名单/屏蔽规则 — 过滤劣质商家，优化检索与监控结果。
 
 规则维度（基于搜索结果现有字段）：
-1. title_keywords  — 标题含这些词就屏蔽（如 代拍/勿拍/引流）
+1. title_keywords  — 标题含这些词就屏蔽（如 代拍/勿拍/引流）。支持 `re:` 前缀正则
 2. location_black — 地区黑名单（骗子高发区）
 3. no_badge       — 屏蔽无信用标识的（badge 为空）
 4. price_drop     — 屏蔽"累计降价 N%"且 N >= 阈值的（反复降价信号）
+5. seller_nick    — 屏蔽指定卖家昵称（劣质商家 ID 库）
+
+正则与 token 匹配逻辑整合自 ai-goofish-monitor 的 result_blacklist_service：
+- `re:` 前缀 → 正则匹配
+- 纯 ASCII 关键词（如 "refurb"）→ token 边界匹配，避免 "apple" 误伤 "pineapple"
+- 中文关键词 → 子串包含匹配（中文无词边界）
 """
 from __future__ import annotations
 
@@ -14,6 +20,10 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Any
+
+_REGEX_PREFIX = "re:"
+_ASCII_TOKEN_PATTERN = re.compile(r"^[a-z0-9 ]+$")
+_ASCII_BOUNDARY = r"[a-z0-9]"
 
 
 class BlacklistDB:
@@ -65,15 +75,34 @@ class BlacklistDB:
 
     # ---- 过滤执行 ----
     def filter_items(self, items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """过滤商品。返回 (通过, 被屏蔽)。"""
+        """过滤商品。返回 (通过, 被屏蔽)。
+
+        批内分析：先计算同批价格中位数，供 price_anomaly 规则判断
+        "低价引流"（价格显著低于同类）。
+        """
         rules = [r for r in self.list_rules() if r["enabled"]]
         if not rules:
             return items, []
+
+        # 批内价格统计（仅对可解析价格的商品）
+        prices = [_to_float(it.get("price")) for it in items]
+        prices = [p for p in prices if p is not None]
+        median = _median(prices) if prices else None
 
         passed: list[dict[str, Any]] = []
         blocked: list[dict[str, Any]] = []
 
         for it in items:
+            # 低价标记（不屏蔽！）：价格显著低于中位价 → 可能是捡漏，也可能是引流。
+            # 作为 _price_flag 附带在商品上，由调用方决定如何呈现——绝不自动屏蔽。
+            price = _to_float(it.get("price"))
+            if median is not None and price is not None and median > 0:
+                ratio = price / median
+                if ratio < 0.5:
+                    it["_price_flag"] = f"低价(中位价¥{median:.0f}的{ratio*100:.0f}%)"
+                elif ratio < 0.8:
+                    it["_price_flag"] = f"偏低(中位价¥{median:.0f}的{ratio*100:.0f}%)"
+
             reasons = _check_item(it, rules)
             if reasons:
                 it["_blocked_reasons"] = reasons
@@ -87,20 +116,65 @@ class BlacklistDB:
         return list(item.get("_blocked_reasons", []))
 
 
+def _to_float(v: Any) -> float | None:
+    """'¥180' → 180.0；'包邮' → None。"""
+    if v is None:
+        return None
+    s_val = str(v).replace("¥", "").replace("￥", "").strip()
+    try:
+        return round(float(s_val), 2)
+    except ValueError:
+        return None
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    srt = sorted(values)
+    n = len(srt)
+    mid = n // 2
+    if n % 2 == 0:
+        return (srt[mid - 1] + srt[mid]) / 2
+    return srt[mid]
+
+
+def _is_regex_keyword(keyword: str) -> bool:
+    return keyword.lower().startswith(_REGEX_PREFIX)
+
+
+def _uses_ascii_token_match(keyword: str) -> bool:
+    return bool(keyword) and _ASCII_TOKEN_PATTERN.fullmatch(keyword) is not None
+
+
+def _keyword_matches(keyword: str, text: str) -> bool:
+    """关键词匹配：`re:` 正则 / 纯 ASCII token 边界 / 中文子串。"""
+    if _is_regex_keyword(keyword):
+        pattern = keyword[len(_REGEX_PREFIX):]
+        try:
+            return re.search(pattern, text, flags=re.IGNORECASE) is not None
+        except re.error:
+            return False
+    if not _uses_ascii_token_match(keyword):
+        return keyword in text
+    pattern = rf"(?<!{_ASCII_BOUNDARY}){re.escape(keyword)}(?!{_ASCII_BOUNDARY})"
+    return re.search(pattern, text, flags=re.IGNORECASE) is not None
+
+
 def _check_item(item: dict[str, Any], rules: list[dict[str, Any]]) -> list[str]:
     reasons: list[str] = []
     title = str(item.get("title", ""))
     location = str(item.get("location", ""))
     badge = str(item.get("badge", "") or "")
     orig = str(item.get("original_price", "") or "")
+    seller_nick = str(item.get("seller_nick", "") or "")
 
     for r in rules:
         kind, value = r["kind"], str(r["value"])
         if not r["enabled"]:
             continue
         if kind == "title_keyword":
-            if value and value in title:
-                reasons.append(f"标题含「{value}」")
+            if value and _keyword_matches(value, title):
+                reasons.append(f"标题命中「{value}」")
         elif kind == "location":
             if value and value in location:
                 reasons.append(f"地区 {location}")
@@ -112,4 +186,9 @@ def _check_item(item: dict[str, Any], rules: list[dict[str, Any]]) -> list[str]:
             m = re.search(r"累计降价(\d+)%", orig)
             if m and int(m.group(1)) >= int(value):
                 reasons.append(f"累计降价{m.group(1)}%")
+        elif kind == "seller_nick":
+            # 卖家昵称精确/包含匹配。注意闲鱼详情页可能显示 tbNick_xxx 脱敏昵称，
+            # 真实昵称从 mtop detail API 的 seller_nick 字段拿。
+            if value and (seller_nick == value or value in seller_nick):
+                reasons.append(f"劣质商家「{value}」")
     return reasons
