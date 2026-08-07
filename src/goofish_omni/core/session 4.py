@@ -99,7 +99,7 @@ class Session:
         params["sign"] = sign
         try:
             resp = self.http.post(
-                "https://h5api.m.goofish.com/h5/mtop.taobao.idlemessage.pc.loginuser.get/1.0/",
+                f"https://acs.m.taobao.com/h5/{api}",
                 params=params,
                 data={"data": data_val},
                 timeout=15,

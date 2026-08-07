@@ -10,7 +10,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from goofish_cli.core.errors import RateLimitedError
+from goofish_omni.core.errors import RateLimitedError
 
 STATE_PATH = Path.home() / ".goofish-cli" / "limiter.json"
 DEFAULT_WRITE_RPM = 1

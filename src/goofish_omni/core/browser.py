@@ -30,7 +30,7 @@ from typing import Any
 
 from loguru import logger
 
-from goofish_omni.core.session import GoofishSession as Session
+from goofish_omni.core.session import Session
 
 PROFILES_PARENT = Path.home() / ".goofish-cli" / "profiles"
 

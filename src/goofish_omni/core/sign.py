@@ -13,7 +13,7 @@ import execjs  # noqa: E402  必须在 subprocess 补丁之后
 
 @lru_cache(maxsize=1)
 def _ctx() -> execjs._abstract_runtime.AbstractRuntimeContext:
-    js_path = files("goofish_cli.static").joinpath("goofish_js_version_2.js")
+    js_path = files("goofish_omni.static").joinpath("goofish_js_version_2.js")
     return execjs.compile(js_path.read_text(encoding="utf-8"))
 
 

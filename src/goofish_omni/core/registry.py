@@ -66,7 +66,7 @@ def iter_commands() -> Iterator[Command]:
 
 
 def discover() -> None:
-    """自动扫描 goofish_cli.commands.* 所有模块，触发装饰器注册。"""
+    """自动扫描 goofish_omni.commands.* 所有模块，触发装饰器注册。"""
     from goofish_omni import commands  # noqa: WPS433
 
     def _walk(pkg: Any) -> None:

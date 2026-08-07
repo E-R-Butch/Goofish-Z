@@ -7,7 +7,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from goofish_cli.core.errors import RiskControlError
+from goofish_omni.core.errors import RiskControlError
 
 STATE_PATH = Path.home() / ".goofish-cli" / "circuit.json"
 DEFAULT_BREAK_MINUTES = 10
