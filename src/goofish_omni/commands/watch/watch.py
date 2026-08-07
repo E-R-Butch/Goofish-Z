@@ -100,9 +100,18 @@ def watch_run(watch_id: int | None = None, all: bool = False, limit: int = 20,
 
     results = []
     from goofish_omni.blacklist import BlacklistDB
+    from goofish_omni.core.guard import check as guard_check
 
     bdb = BlacklistDB(Path.home() / ".goofish-omni" / "watch.db")
     for w in targets:
+        # 熔断检查：一旦触发风控熔断，停止后续所有监控项（不硬闯）
+        try:
+            guard_check()
+        except Exception as e:
+            results.append({"watch_id": w["id"], "keyword": w["keyword"],
+                            "error": f"风控熔断，停止本轮: {str(e)[:80]}"})
+            break
+
         try:
             items = search_cmd(str(w["keyword"]), limit=limit).get("items", [])
         except Exception as e:
@@ -223,6 +232,10 @@ def _fetch_seller_nick_via_page(item_id: str) -> str:
 """
 
     async def _run() -> str:
+        # 限流：页面抓取间隔 4s
+        from goofish_omni.core.limiter import check as rate_check
+
+        rate_check("seller_page")
         url = f"https://www.goofish.com/item?id={item_id}"
         async with goofish_page() as page:
             await page.goto(url, wait_until="domcontentloaded")

@@ -115,6 +115,12 @@ def call(
     raw = resp.json()
     try:
         _classify_error(raw, api)
+    except RiskControlError as e:
+        # 风控：自动熔断（分级冷却）+ 记录来源 API，然后抛出
+        from goofish_omni.core.guard import trip
+
+        trip(str(e), api=api)
+        raise
     except AuthRequiredError as e:
         # 恢复顺序（goofish-omni 增强）：先试 API 层 refresh_token（快、稳），
         # 失败再走 Playwright 免密登录，最后才放弃。

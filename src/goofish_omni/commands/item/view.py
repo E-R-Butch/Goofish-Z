@@ -140,7 +140,12 @@ async def _run(item_id: str) -> dict[str, Any]:
 
     err = result.get("error")
     if err == "blocked":
-        raise GoofishError("商品详情页被验证码/安全验证拦截，触发风控")
+        from goofish_omni.core.errors import RiskControlError
+        from goofish_omni.core.guard import trip
+
+        msg = "商品详情页被验证码/安全验证拦截，触发风控，已熔断"
+        trip(msg, api="item.view.browser")
+        raise RiskControlError(msg)
     if err == "mtop-not-ready":
         raise GoofishError("页面 window.lib.mtop 未就绪（等待超时），页面加载异常")
 

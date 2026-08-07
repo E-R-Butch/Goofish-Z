@@ -130,7 +130,13 @@ async def _run(query: str, limit: int) -> list[dict[str, Any]]:
     if not items and payload.get("requiresAuth"):
         raise AuthRequiredError("www.goofish.com 搜索结果页要求登录，cookies 可能失效")
     if not items and payload.get("blocked"):
-        raise GoofishError("搜索页返回验证码/安全验证（触发风控），稍后重试或换账号")
+        # 浏览器级风控（滑块/验证码）→ 触发熔断（hard 级），停止后续自动化
+        from goofish_omni.core.errors import RiskControlError
+        from goofish_omni.core.guard import trip
+
+        msg = "搜索页返回验证码/安全验证（触发风控），已熔断"
+        trip(msg, api="search.browser")
+        raise RiskControlError(msg)
 
     if not items and not payload.get("empty"):
         preview = (payload.get("bodyPreview") or "")[:200]
@@ -157,6 +163,10 @@ async def _run(query: str, limit: int) -> list[dict[str, Any]]:
     columns=["rank", "item_id", "title", "price", "condition", "brand", "location", "badge", "url"],
 )
 def search(query: str, limit: int = 20, filter_blacklist: bool = True) -> dict[str, Any]:
+    # 限流：搜索间隔 30s（防接口级风控）
+    from goofish_omni.core.limiter import check as rate_check
+
+    rate_check("search")
     items = asyncio.run(_run(str(query).strip(), _normalize_limit(limit)))
     result: dict[str, Any] = {"items": items, "count": len(items)}
 
