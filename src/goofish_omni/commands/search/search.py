@@ -168,6 +168,20 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True) -> dict[s
 
     rate_check("search")
     items = asyncio.run(_run(str(query).strip(), _normalize_limit(limit)))
+
+    # 容量校验：query 含容量（如 32G）时，过滤搜索结果里的异容量污染
+    # （闲鱼模糊搜索会把 16G 混进 32G 的结果——2026-08-08 实测 20 条里 3 条污染）
+    from goofish_omni.blacklist import capacity_matches, _extract_capacity
+
+    req_cap = _extract_capacity(str(query))
+    if req_cap:
+        filtered = []
+        for it in items:
+            if capacity_matches(str(it.get("title", "")), req_cap):
+                filtered.append(it)
+            else:
+                it["_cap_mismatch"] = f"搜索{req_cap}G但商品容量不匹配"
+        items = filtered
     result: dict[str, Any] = {"items": items, "count": len(items)}
 
     if filter_blacklist:

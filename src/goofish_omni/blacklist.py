@@ -155,6 +155,30 @@ def _extract_capacity(title: str) -> int | None:
         return None
 
 
+def capacity_matches(title: str, required_cap: int | None) -> bool:
+    """校验商品容量是否匹配搜索要求。
+
+    required_cap=32 时：
+    - 标题含 32G/32GB → 通过
+    - 标题含 16G 但不含 32 → 拒绝（污染）
+    - 标题同时含 16G+32G（如"16GB内存条 32G套装"）→ 通过（套装可能相关）
+    - 标题无容量信息 → 通过（无法判断，不误杀）
+    """
+    if required_cap is None:
+        return True
+    caps = set()
+    for m in re.finditer(r"(\d{1,3})\s*(?:GB|G)\b", str(title or ""), re.IGNORECASE):
+        try:
+            caps.add(int(m.group(1)))
+        except ValueError:
+            pass
+    if not caps:
+        return True  # 无容量信息，不误杀
+    if required_cap in caps:
+        return True  # 含目标容量
+    return False  # 有容量但不含目标 → 污染
+
+
 def _unit_price(it: dict[str, Any]) -> float | None:
     """每 GB 价格（元/GB）。无容量或无法解析价格 → None。"""
     price = _to_float(it.get("price"))
