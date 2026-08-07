@@ -193,6 +193,16 @@ def extract_generation(title: str) -> str | None:
 _TOKEN_RE = re.compile(r"[A-Za-z]+\d+[A-Za-z]*|\d+[A-Za-z]+\d*", re.IGNORECASE)
 
 
+def is_system_unit(item: dict[str, Any]) -> bool:
+    """整机/主机识别——可能是打包出（网吧倒闭/搬家急出），里面常藏捡漏。
+
+    整机标题通常只写"主机/电脑"，不含具体型号 token（90HX/32G 不会出现在标题），
+    所以 token 匹配必须对整机豁免，否则会误杀捡漏机会。
+    """
+    title = str(item.get("title", ""))
+    return any(w in title for w in ("主机", "台式机", "整机", "电脑", "服务器整机", "网吧")) and len(title) < 45
+
+
 def is_buying_post(title: str) -> bool:
     """收购帖检测（UNIVERSAL 硬规则）：买家求购不是商品，任何搜索都必须过滤。
 
@@ -223,13 +233,8 @@ def is_noise(item: dict[str, Any]) -> str | None:
     # 收购帖是 UNIVERSAL 硬规则——买家是来买东西的，不是看收购广告的
     if is_buying_post(title):
         return "收购帖"
-    # 其他结构性噪音
-    if "回收" in title and ("芯片" in title or "呆料" in title or "IC" in title.upper()):
-        return "回收广告"
-    if "驱动" in title and ("教程" in title or "自动发货" in title):
-        return "驱动教程"
-    if ("主机" in title or "台式机" in title or "整机" in title) and len(title) < 40:
-        return "整机"
+    # 只做用户要求过的过滤：收购帖（universal）。
+    # 整机/主机【不】过滤——网吧倒闭/搬家急出等整机打包常有捡漏（用户明确要求保留）
     return None
 
 
