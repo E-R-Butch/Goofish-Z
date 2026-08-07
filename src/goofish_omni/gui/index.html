@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>goofish-omni · 闲鱼监控台</title>
+<style>
+  :root { --bg:#0f1115; --panel:#1a1d24; --border:#2a2e37; --text:#e6e8eb; --dim:#8b919c; --accent:#4da3ff; --good:#3ddc84; --warn:#ffb454; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,"PingFang SC",sans-serif; padding:24px; }
+  h1 { font-size:20px; margin-bottom:4px; }
+  .sub { color:var(--dim); font-size:13px; margin-bottom:20px; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px; flex:1; min-width:320px; }
+  .card h3 { font-size:14px; color:var(--dim); margin-bottom:12px; font-weight:500; }
+  input, button { background:#232733; border:1px solid var(--border); color:var(--text); border-radius:6px; padding:8px 12px; font-size:13px; }
+  input:focus { outline:none; border-color:var(--accent); }
+  button { cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#0b0e12; font-weight:600; }
+  button:hover { filter:brightness(1.1); }
+  .watch-item { display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border); font-size:13px; }
+  .watch-item:last-child { border-bottom:none; }
+  .price { color:var(--good); font-weight:600; }
+  .price.high { color:var(--warn); }
+  .tag { background:#232733; border-radius:4px; padding:2px 8px; font-size:11px; color:var(--dim); }
+  .alert { border-left:3px solid var(--warn); padding:8px 12px; margin:6px 0; background:#23273333; font-size:13px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th { text-align:left; color:var(--dim); font-weight:500; padding:8px; border-bottom:1px solid var(--border); }
+  td { padding:8px; border-bottom:1px solid #22262f; }
+  .mono { font-family:ui-monospace,Menlo,monospace; font-size:11px; color:var(--dim); }
+  .status { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--good); margin-right:6px; }
+  .status.err { background:var(--warn); }
+</style>
+</head>
+<body>
+  <h1>🐟 goofish-omni · 闲鱼监控台</h1>
+  <div class="sub"><span class="status" id="health"></span><span id="healthText">连接中...</span></div>
+
+  <div class="row">
+    <div class="card" style="flex:1.4">
+      <h3>🔍 搜索</h3>
+      <div style="display:flex; gap:8px; margin-bottom:12px;">
+        <input id="searchQ" placeholder="关键词，如 DDR3 RECC 32G" style="flex:1" onkeydown="if(event.key==='Enter')doSearch()">
+        <button class="primary" onclick="doSearch()">搜索</button>
+      </div>
+      <div id="searchResults" style="max-height:380px; overflow-y:auto;">
+        <div class="sub">输入关键词开始搜索</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>📌 监控项</h3>
+      <div style="display:flex; gap:8px; margin-bottom:12px;">
+        <input id="watchQ" placeholder="监控关键词" style="flex:1" onkeydown="if(event.key==='Enter')addWatch()">
+        <input id="watchMax" placeholder="低价线¥" style="width:70px">
+        <button class="primary" onclick="addWatch()">添加</button>
+      </div>
+      <div id="watchList"></div>
+      <div style="margin-top:12px;">
+        <button onclick="runAll()">▶ 立即检查全部</button>
+        <span id="runResult" class="sub" style="margin-left:8px"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="row" style="margin-top:12px;">
+    <div class="card">
+      <h3>⚠️ 告警记录</h3>
+      <div id="alerts"><div class="sub">暂无告警</div></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:12px;">
+    <h3>📈 价格历史 <span class="mono" id="histWatchLabel"></span></h3>
+    <div id="history" style="max-height:300px; overflow-y:auto;"><div class="sub">选择监控项查看历史</div></div>
+  </div>
+
+<script>
+const $ = id => document.getElementById(id);
+let watches = [];
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, {
+    headers: {'Content-Type': 'application/json'},
+    ...opts
+  });
+  if (!r.ok) throw new Error((await r.text()).slice(0, 200));
+  return r.json();
+}
+
+async function loadHealth() {
+  try {
+    await api('/health');
+    $('health').className = 'status';
+    $('healthText').textContent = 'API 在线 · goofish-omni';
+  } catch (e) {
+    $('health').className = 'status err';
+    $('healthText').textContent = 'API 不可达';
+  }
+}
+
+async function doSearch() {
+  const q = $('searchQ').value.trim();
+  if (!q) return;
+  const box = $('searchResults');
+  box.innerHTML = '<div class="sub">搜索中...</div>';
+  try {
+    const d = await api(`/api/search?q=${encodeURIComponent(q)}&limit=15`);
+    const items = d.items || [];
+    if (!items.length) { box.innerHTML = '<div class="sub">无结果</div>'; return; }
+    box.innerHTML = '<table><tr><th>价格</th><th>标题</th><th>地区</th></tr>' + items.map(i =>
+      `<tr><td class="price">${i.price || '-'}</td><td><a href="${i.url}" target="_blank" style="color:var(--text);text-decoration:none">${i.title}</a></td><td class="sub">${i.location||''}</td></tr>`
+    ).join('') + '</table>';
+  } catch (e) { box.innerHTML = `<div class="alert">错误: ${e.message}</div>`; }
+}
+
+async function loadWatches() {
+  try {
+    const d = await api('/api/watch');
+    watches = d.watches || [];
+    const box = $('watchList');
+    if (!watches.length) { box.innerHTML = '<div class="sub">暂无监控项</div>'; return; }
+    box.innerHTML = watches.map(w =>
+      `<div class="watch-item">
+        <div>
+          <div>${w.keyword} ${w.enabled ? '' : '<span class="tag">已停用</span>'}</div>
+          <div class="mono">ID ${w.id}${w.max_price ? ' · 低价线 ¥' + w.max_price : ''}</div>
+        </div>
+        <div>
+          <button onclick="showHistory(${w.id})" title="历史">📈</button>
+          <button onclick="delWatch(${w.id})" title="删除" style="color:#ff6b6b">✕</button>
+        </div>
+      </div>`
+    ).join('');
+  } catch (e) { $('watchList').innerHTML = `<div class="alert">${e.message}</div>`; }
+}
+
+async function addWatch() {
+  const kw = $('watchQ').value.trim();
+  if (!kw) return;
+  const max = $('watchMax').value ? parseFloat($('watchMax').value) : null;
+  await api('/api/watch', { method: 'POST', body: JSON.stringify({ keyword: kw, max_price: max }) });
+  $('watchQ').value = ''; $('watchMax').value = '';
+  loadWatches();
+}
+
+async function delWatch(id) {
+  await api(`/api/watch/${id}`, { method: 'DELETE' });
+  loadWatches();
+}
+
+async function runAll() {
+  $('runResult').textContent = '检查中...';
+  try {
+    const d = await api('/api/watch/run-all', { method: 'POST' });
+    const total = (d.results || []).reduce((s, r) => s + (r.captured || 0), 0);
+    const alerts = (d.results || []).flatMap(r => r.alerts || []);
+    $('runResult').textContent = `捕获 ${total} 条 · 告警 ${alerts.length} 条`;
+    loadAlerts(); loadWatches();
+  } catch (e) { $('runResult').textContent = '失败: ' + e.message; }
+}
+
+async function showHistory(id) {
+  try {
+    const d = await api(`/api/watch/${id}/history?limit=30`);
+    const items = d.items || [];
+    $('histWatchLabel').textContent = `(watch ${id})`;
+    const box = $('history');
+    if (!items.length) { box.innerHTML = '<div class="sub">暂无历史</div>'; return; }
+    // 按 item 聚合最新价格，按价格排序
+    const latest = {};
+    for (const it of items) {
+      if (!latest[it.item_id]) latest[it.item_id] = it;
+    }
+    box.innerHTML = '<table><tr><th>价格</th><th>标题</th><th>时间</th></tr>' +
+      Object.values(latest).map(it =>
+        `<tr><td class="price">¥${it.price}</td><td><a href="${it.url}" target="_blank" style="color:var(--text);text-decoration:none">${it.title}</a></td><td class="mono">${new Date(it.checked_at*1000).toLocaleString('zh-CN')}</td></tr>`
+      ).join('') + '</table>';
+  } catch (e) { $('history').innerHTML = `<div class="alert">${e.message}</div>`; }
+}
+
+// 告警（从最近历史推断）
+async function loadAlerts() {
+  try {
+    const d = await api('/api/watch');
+    const box = $('alerts');
+    let alerts = [];
+    for (const w of d.watches || []) {
+      const h = await api(`/api/watch/${w.id}/history?limit=100`);
+      const latest = {};
+      for (const it of h.items || []) {
+        if (!latest[it.item_id] && it.price != null) latest[it.item_id] = it;
+      }
+      for (const it of Object.values(latest)) {
+        if (w.max_price && it.price <= w.max_price) {
+          alerts.push({ title: it.title, price: it.price, reason: `低于¥${w.max_price}` });
+        }
+      }
+    }
+    if (!alerts.length) { box.innerHTML = '<div class="sub">暂无告警</div>'; return; }
+    box.innerHTML = alerts.map(a =>
+      `<div class="alert"><b>¥${a.price}</b> ${a.reason} — ${a.title}</div>`
+    ).join('');
+  } catch (e) {}
+}
+
+loadHealth(); loadWatches(); loadAlerts();
+setInterval(loadHealth, 30000);
+</script>
+</body>
+</html>
