@@ -190,6 +190,73 @@ def extract_generation(title: str) -> str | None:
     return m.group(1).upper()
 
 
+_TOKEN_RE = re.compile(r"[A-Za-z]+\d+[A-Za-z]*|\d+[A-Za-z]+\d*", re.IGNORECASE)
+
+
+def is_buying_post(title: str) -> bool:
+    """收购帖检测（UNIVERSAL 硬规则）：买家求购不是商品，任何搜索都必须过滤。
+
+    触发特征：
+    - 标题以「收」开头（收显卡/收内存/收芯片...）——最典型
+    - 含「诚收/求购/大量收/高价收」等求购意图词
+    - 含「收收收」（烦躁式收购）
+    - 含「回收」（回收 IC/芯片/呆料广告）
+    """
+    t = str(title or "").strip()
+    if not t:
+        return False
+    # 开头即「收」——闲鱼收购帖的典型格式（"收XXX"）
+    if t.startswith("收"):
+        # 排除"收藏"、"收获"等正常词开头
+        if not t.startswith(("收藏", "收获", "收到")):
+            return True
+    # 求购意图词
+    for kw in ("诚收", "求购", "大量收", "高价收", "收收收", "回收", "上门收"):
+        if kw in t:
+            return True
+    return False
+
+
+def is_noise(item: dict[str, Any]) -> str | None:
+    """检测商品是否为通用噪音（收购帖/回收广告/驱动教程/整机）。返回噪音类型或 None。"""
+    title = str(item.get("title", ""))
+    # 收购帖是 UNIVERSAL 硬规则——买家是来买东西的，不是看收购广告的
+    if is_buying_post(title):
+        return "收购帖"
+    # 其他结构性噪音
+    if "回收" in title and ("芯片" in title or "呆料" in title or "IC" in title.upper()):
+        return "回收广告"
+    if "驱动" in title and ("教程" in title or "自动发货" in title):
+        return "驱动教程"
+    if ("主机" in title or "台式机" in title or "整机" in title) and len(title) < 40:
+        return "整机"
+    return None
+
+
+def query_tokens(query: str) -> list[str]:
+    """从搜索词提取字母数字组合 token（如 90HX / 32G / DDR3 中的 DDR3 也含数字? 不含）。
+
+    只提取「字母+数字混合」token——纯数字（4690）和纯字母（DDR）不提取，
+    避免误伤（i5-4690K 的 4690 不该匹配 90HX）。
+    """
+    tokens = set()
+    for m in _TOKEN_RE.finditer(str(query or "")):
+        tokens.add(m.group(0).upper())
+    return sorted(tokens)
+
+
+def token_match(title: str, tokens: list[str]) -> bool:
+    """标题必须包含所有查询 token（去空格后子串匹配）。
+
+    90HX → 标题去空格后含 "90HX"（匹配 CMP90HX / cmp 90hx）
+    不匹配：i5-4690K（无 90HX）、P106-90（无 90HX）、CMP 30HX（无 90HX）
+    """
+    if not tokens:
+        return True
+    t = str(title or "").upper().replace(" ", "").replace("\u3000", "")
+    return all(tok in t for tok in tokens)
+
+
 def is_broken_stick(item: dict[str, Any], max_price: float = 50) -> bool:
     """坏条/报废条特例：代数匹配但标为坏条/报废/坏料/收藏，且价格极低。
 

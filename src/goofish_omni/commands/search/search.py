@@ -169,6 +169,34 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True) -> dict[s
     rate_check("search")
     items = asyncio.run(_run(str(query).strip(), _normalize_limit(limit)))
 
+    # 噪音过滤（UNIVERSAL 硬规则）：收购帖/回收广告/驱动教程/整机——
+    # 买家是来买东西的，不是看收购广告的。任何搜索都必须过滤。
+    from goofish_omni.blacklist import is_noise
+
+    clean = []
+    for it in items:
+        noise = is_noise(it)
+        if noise:
+            it["_noise"] = noise
+        else:
+            clean.append(it)
+    items = clean
+
+    # token 精确匹配（主过滤器）：搜索词里的字母数字组合（90HX/32G等）
+    # 必须完整出现在标题中。闲鱼模糊搜索会把 i5-4690K/P106-90/CMP 30HX
+    # 混进 "CMP 90HX" 结果（2026-08-08 实测 20 条里 15 条污染）。
+    from goofish_omni.blacklist import query_tokens, token_match
+
+    tokens = query_tokens(str(query))
+    if tokens:
+        filtered = []
+        for it in items:
+            if token_match(str(it.get("title", "")), tokens):
+                filtered.append(it)
+            else:
+                it["_token_mismatch"] = f"搜索词包含{','.join(tokens)}但标题不含"
+        items = filtered
+
     # 容量校验：query 含容量（如 32G）时，过滤搜索结果里的异容量污染
     # （闲鱼模糊搜索会把 16G 混进 32G 的结果——2026-08-08 实测 20 条里 3 条污染）
     from goofish_omni.blacklist import (
