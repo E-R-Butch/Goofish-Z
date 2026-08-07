@@ -86,11 +86,20 @@ async def _login_via_qr_async(timeout: int) -> dict[str, str]:
             cookies_list = await page.context.cookies()
             if _has_all_login_cookies(cookies_list):
                 logger.info("[qr] 扫码成功，session cookies 已下发")
-                return {
-                    c["name"]: c["value"]
+                # 保留完整字段（name/value/domain/path/secure），
+                # 否则 domain 丢失后注入时按名字猜域会种错（cookie2 是重灾区）
+                return [
+                    {
+                        "name": c.get("name", ""),
+                        "value": c.get("value", ""),
+                        "domain": c.get("domain", ""),
+                        "path": c.get("path", "/"),
+                        "secure": bool(c.get("secure", True)),
+                        "httpOnly": bool(c.get("httpOnly", False)),
+                    }
                     for c in cookies_list
                     if c.get("name") and c.get("value")
-                }
+                ]
             await asyncio.sleep(1.0)
 
         logger.warning(f"[qr] {timeout}s 超时未登录成功")
@@ -113,10 +122,10 @@ def _resolve_timeout(timeout: int | None) -> int:
         return _DEFAULT_QR_TIMEOUT
 
 
-def login_via_qr(*, timeout: int | None = None, persist: bool = True) -> dict[str, str]:
-    """阻塞：起 Playwright 让用户扫码，成功返回 cookies 并可选写回磁盘。
+def login_via_qr(*, timeout: int | None = None, persist: bool = True) -> list[dict[str, Any]]:
+    """阻塞：起 Playwright 让用户扫码，成功返回完整 cookie 列表（含 domain）并可写回磁盘。
 
-    空 dict 表示超时或 Playwright 异常（Chrome 未装等）。
+    空 list 表示超时或 Playwright 异常（Chrome 未装等）。
     """
     timeout = _resolve_timeout(timeout)
     try:

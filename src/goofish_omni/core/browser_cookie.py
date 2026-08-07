@@ -165,7 +165,13 @@ print(json.dumps({"cookies": out}))
 
 
 def _jars_to_dict(jars: list[Any]) -> dict[str, str]:
-    """从多个 CookieJar 合并筛出阿里系域 cookie。"""
+    """从多个 CookieJar 合并筛出阿里系域 cookie。
+
+    返回 {name: value} 扁平格式（兼容旧调用方）。注意：这会丢失 domain 信息，
+    注入 playwright 时按名字猜域可能猜错（cookie2 等淘系 cookie 来自
+    .taobao.com 还是 .goofish.com 取决于来源）。如需保留 domain 用
+    `_jars_to_entries`。
+    """
     out: dict[str, str] = {}
     for jar in jars:
         for cookie in jar:
@@ -175,6 +181,25 @@ def _jars_to_dict(jars: list[Any]) -> dict[str, str]:
             # 同名后写覆盖前 —— 这里没法判优先级，实测取到 unb/_m_h5_tk 都 OK
             out[cookie.name] = cookie.value
     return out
+
+
+def _jars_to_entries(jars: list[Any]) -> list[dict[str, Any]]:
+    """从多个 CookieJar 合并筛出阿里系域 cookie，保留完整字段（含 domain）。"""
+    out: dict[str, dict[str, Any]] = {}
+    for jar in jars:
+        for cookie in jar:
+            host = (cookie.domain or "").lstrip(".")
+            if not any(h in host for h in ALLOWED_HOSTS):
+                continue
+            out[cookie.name] = {
+                "name": cookie.name,
+                "value": cookie.value,
+                "domain": cookie.domain or "",
+                "path": cookie.path or "/",
+                "secure": bool(cookie.secure),
+                "httpOnly": bool(cookie.has_nonstandard_attr("HttpOnly")) or bool(getattr(cookie, "_rest", {}).get("HttpOnly")),
+            }
+    return list(out.values())
 
 
 def _try_browser(browser: str) -> dict[str, str] | None:

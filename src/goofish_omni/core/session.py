@@ -154,10 +154,22 @@ def _load_or_bootstrap_cookies(path: Path) -> dict[str, str]:
     raise AuthRequiredError(f"未找到有效 cookie，请先执行 goofish-omni auth login（或检查 {path}）")
 
 
-def write_cookies_json(path: Path, cookies: dict[str, str]) -> None:
+def write_cookies_json(path: Path, cookies: dict[str, str] | list[dict[str, Any]]) -> None:
+    """写入 cookie 文件。支持两种格式：
+    - dict {name: value} — 自动补 domain 占位（加载时按名字猜域）
+    - list [{name,value,domain,path,secure,httpOnly}] — 保留完整字段（扫码路径）
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(cookies, dict):
+        payload = [
+            {"name": k, "value": v}
+            for k, v in cookies.items()
+            if k and v is not None
+        ]
+    else:
+        payload = list(cookies)
     path.write_text(
-        json.dumps([{"name": k, "value": v} for k, v in cookies.items()], ensure_ascii=False, indent=2),
+        json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     try:

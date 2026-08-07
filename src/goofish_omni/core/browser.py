@@ -50,32 +50,64 @@ def _split_cookie_domain(name: str) -> str:
     return ".taobao.com" if name in _TAOBAO_COOKIE_NAMES else ".goofish.com"
 
 
-def _cookies_to_playwright(cookies: dict[str, str]) -> list[dict[str, Any]]:
-    """把 `{name: value}` 转成 playwright `add_cookies` 需要的列表形态。"""
+def _cookies_to_playwright(cookies: dict[str, str] | list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把 cookie 转成 playwright `add_cookies` 需要的列表形态。
+
+    支持两种输入：
+    - dict {name: value} — domain 按名字猜（旧格式兼容）
+    - list [{name,value,domain,path,secure,httpOnly}] — 保留扫码时的原始 domain
+      （关键：cookie2/_m_h5_tk 等淘系 cookie 实际来自 .goofish.com 或 .taobao.com，
+      猜错域会导致登录态不被识别——2026-08-08 实测修复）
+    """
     now = int(__import__("time").time())
     # 7 天后过期——cookies.json 自身会被 Session 层更新，这里只要够跑完当前命令就行
     expires = now + 7 * 24 * 3600
     out: list[dict[str, Any]] = []
-    for name, value in cookies.items():
-        if not value:
+
+    if isinstance(cookies, dict):
+        entries = [
+            {"name": n, "value": v}
+            for n, v in cookies.items()
+            if v
+        ]
+    else:
+        entries = [c for c in cookies if c.get("value")]
+
+    for c in entries:
+        name = c.get("name")
+        if not name:
             continue
+        domain = c.get("domain") or _split_cookie_domain(name)
         out.append({
             "name": name,
-            "value": value,
-            "domain": _split_cookie_domain(name),
-            "path": "/",
+            "value": c.get("value"),
+            "domain": domain,
+            "path": c.get("path", "/"),
             "expires": expires,
-            "httpOnly": False,
-            "secure": True,
+            "httpOnly": bool(c.get("httpOnly", False)),
+            "secure": bool(c.get("secure", True)),
             "sameSite": "None",
         })
     return out
 
 
-def _load_cookies_from_session() -> dict[str, str]:
-    """直接走 Session.load —— 三级兜底 (cookies.json → 本机 Chrome 自动抓 → AuthRequiredError)
-    全在 Session 层已经实现，不重复造轮子。拿到 http.cookies 之后展平成 {name: value}。
+def _load_cookies_from_session() -> dict[str, str] | list[dict[str, Any]]:
+    """读取 cookie：优先从 cookies.json 原始格式（保留 domain），
+    否则走 Session.load 三级兜底后展平。
     """
+    from goofish_omni.core.session import resolve_cookie_path
+
+    path = resolve_cookie_path()
+    if path.exists():
+        try:
+            import json as _json
+
+            raw = _json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, list) and raw and "domain" in raw[0]:
+                # 完整字段格式（扫码写入）——保留 domain
+                return raw
+        except Exception:  # noqa: BLE001
+            pass
     session = Session.load()
     return {name: value for name, value in session.http.cookies.items() if value}
 

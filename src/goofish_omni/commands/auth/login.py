@@ -83,6 +83,23 @@ def login(
         cookies = _parse_json(p.read_text())
         source_label = f"file:{p}"
 
+    if isinstance(cookies, list):
+        # 扫码路径：保留完整字段（含 domain）的 list 格式
+        names = {c.get("name") for c in cookies}
+        if "unb" not in names or "_m_h5_tk" not in names:
+            raise AuthRequiredError(
+                "cookie 缺失关键字段 unb / _m_h5_tk。"
+                "请先在浏览器里登录 https://www.goofish.com 再试。"
+            )
+        write_cookies_json(target, cookies)
+        return {
+            "source": source_label,
+            "path": str(target),
+            "unb": next(c["value"] for c in cookies if c.get("name") == "unb"),
+            "tracknick": next((c["value"] for c in cookies if c.get("name") == "tracknick"), ""),
+            "cookies_count": len(cookies),
+        }
+
     if "unb" not in cookies or "_m_h5_tk" not in cookies:
         raise AuthRequiredError(
             "cookie 缺失关键字段 unb / _m_h5_tk。"
