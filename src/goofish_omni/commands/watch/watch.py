@@ -261,17 +261,26 @@ def _apply_signal_engine(sdb, items: list[dict[str, Any]]) -> list[dict[str, Any
     返回带 _signals 标注的商品列表（供结果展示）。
     只对有 seller_nick 的商品做卖家聚合（无昵称的仅标注，不聚合）。
     """
-    # 批内中位价（供低价引流信号）
-    from goofish_omni.db import _to_float
+    # 批内价格统计：每GB单价中位数（有容量）+ 裸价中位数（无容量兜底）
+    from goofish_omni.blacklist import _extract_capacity, _median, _to_float
     from goofish_omni.signals import detect_signals
 
-    prices = [_to_float(it.get("price")) for it in items]
-    prices = [p for p in prices if p is not None]
-    median = sorted(prices)[len(prices) // 2] if prices else None
+    unit_prices = []
+    raw_prices = []
+    for it in items:
+        price = _to_float(it.get("price"))
+        if price is None:
+            continue
+        raw_prices.append(price)
+        cap = _extract_capacity(str(it.get("title", "")))
+        if cap and cap > 0:
+            unit_prices.append(price / cap)
+    median_unit = _median(unit_prices) if unit_prices else None
+    median_raw = _median(raw_prices) if raw_prices else None
 
     auto_banned: list[dict[str, Any]] = []
     for it in items:
-        sigs = detect_signals(it, median)
+        sigs = detect_signals(it, median_unit, median_raw)
         it["_signals"] = sigs
         if not sigs:
             continue

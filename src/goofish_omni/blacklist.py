@@ -84,24 +84,38 @@ class BlacklistDB:
         if not rules:
             return items, []
 
-        # 批内价格统计（仅对可解析价格的商品）
-        prices = [_to_float(it.get("price")) for it in items]
-        prices = [p for p in prices if p is not None]
-        median = _median(prices) if prices else None
+        # 批内价格统计：优先用每 GB 单价（元/GB），无容量信息的商品退回裸价。
+        # 原因：16G ¥150 vs 32G ¥200 裸价看似 16G 便宜，实际 16G ¥9.4/GB 比
+        # 32G ¥6.25/GB 贵——容量归一化才可比。
+        unit_prices = [_unit_price(it) for it in items]
+        unit_prices = [p for p in unit_prices if p is not None]
+        raw_prices = [_to_float(it.get("price")) for it in items]
+        raw_prices = [p for p in raw_prices if p is not None]
+        median_unit = _median(unit_prices) if unit_prices else None
+        median_raw = _median(raw_prices) if raw_prices else None
 
         passed: list[dict[str, Any]] = []
         blocked: list[dict[str, Any]] = []
 
         for it in items:
-            # 低价标记（不屏蔽！）：价格显著低于中位价 → 可能是捡漏，也可能是引流。
+            # 低价标记（不屏蔽！）：显著低于同类中位价 → 可能是捡漏，也可能是引流。
             # 作为 _price_flag 附带在商品上，由调用方决定如何呈现——绝不自动屏蔽。
-            price = _to_float(it.get("price"))
-            if median is not None and price is not None and median > 0:
-                ratio = price / median
+            # 有容量的商品比每GB单价（更准），无容量的退回裸价比。
+            unit = _unit_price(it)
+            if unit is not None and median_unit and median_unit > 0:
+                ratio = unit / median_unit
                 if ratio < 0.5:
-                    it["_price_flag"] = f"低价(中位价¥{median:.0f}的{ratio*100:.0f}%)"
+                    it["_price_flag"] = f"低价(同类每GB ¥{median_unit:.2f}的{ratio*100:.0f}%)"
                 elif ratio < 0.8:
-                    it["_price_flag"] = f"偏低(中位价¥{median:.0f}的{ratio*100:.0f}%)"
+                    it["_price_flag"] = f"偏低(同类每GB ¥{median_unit:.2f}的{ratio*100:.0f}%)"
+            else:
+                price = _to_float(it.get("price"))
+                if median_raw is not None and price is not None and median_raw > 0:
+                    ratio = price / median_raw
+                    if ratio < 0.5:
+                        it["_price_flag"] = f"低价(中位价¥{median_raw:.0f}的{ratio*100:.0f}%)"
+                    elif ratio < 0.8:
+                        it["_price_flag"] = f"偏低(中位价¥{median_raw:.0f}的{ratio*100:.0f}%)"
 
             reasons = _check_item(it, rules)
             if reasons:
@@ -125,6 +139,29 @@ def _to_float(v: Any) -> float | None:
         return round(float(s_val), 2)
     except ValueError:
         return None
+
+
+_CAPACITY_RE = re.compile(r"(\d{1,3})\s*(?:GB|G)\b", re.IGNORECASE)
+
+
+def _extract_capacity(title: str) -> int | None:
+    """从标题提取容量（GB）。16G/32G/64G → 16/32/64。"""
+    m = _CAPACITY_RE.search(str(title or ""))
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
+def _unit_price(it: dict[str, Any]) -> float | None:
+    """每 GB 价格（元/GB）。无容量或无法解析价格 → None。"""
+    price = _to_float(it.get("price"))
+    cap = _extract_capacity(str(it.get("title", "")))
+    if price is None or not cap or cap <= 0:
+        return None
+    return price / cap
 
 
 def _median(values: list[float]) -> float | None:

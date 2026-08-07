@@ -159,8 +159,13 @@ class SellerSignalDB:
             conn.execute("DELETE FROM seller_signals WHERE seller_nick=?", (seller_nick,))
 
 
-def detect_signals(item: dict[str, Any], median_price: float | None) -> list[str]:
-    """从单条商品提取信号标签。纯层级1字段，零额外请求。"""
+def detect_signals(item: dict[str, Any], median_unit_price: float | None,
+                   median_raw_price: float | None = None) -> list[str]:
+    """从单条商品提取信号标签。纯层级1字段，零额外请求。
+
+    median_unit_price: 同类每GB单价中位数（有容量商品用）
+    median_raw_price:  裸价中位数（无容量商品退回用）
+    """
     signals: list[str] = []
     title = str(item.get("title", ""))
     badge = str(item.get("badge", "") or "")
@@ -182,13 +187,20 @@ def detect_signals(item: dict[str, Any], median_price: float | None) -> list[str
     if m and int(m.group(1)) >= 30:
         signals.append("price_drop")
 
-    # 低价引流：显著低于同类中位价
-    if median_price and median_price > 0:
-        try:
-            price = float(str(item.get("price", "")).replace("¥", "").replace("￥", "").strip())
-            if price < median_price * 0.5:
+    # 低价引流：每GB单价显著低于同类中位（容量归一化，16G ¥150 vs 32G ¥200
+    # 裸价不可比，¥9.4/GB vs ¥6.25/GB 才能看出谁便宜）
+    try:
+        price = float(str(item.get("price", "")).replace("¥", "").replace("￥", "").strip())
+    except ValueError:
+        price = None
+    if price is not None:
+        cap_m = re.search(r"(\d{1,3})\s*(?:GB|G)\b", title, re.IGNORECASE)
+        if cap_m and int(cap_m.group(1)) > 0 and median_unit_price and median_unit_price > 0:
+            unit = price / int(cap_m.group(1))
+            if unit < median_unit_price * 0.5:
                 signals.append("low_price_trap")
-        except ValueError:
-            pass
+        elif median_raw_price and median_raw_price > 0:
+            if price < median_raw_price * 0.5:
+                signals.append("low_price_trap")
 
     return signals
