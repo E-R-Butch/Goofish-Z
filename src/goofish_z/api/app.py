@@ -104,6 +104,33 @@ async def api_watch_run(body: dict[str, Any]) -> JSONResponse:
     return JSONResponse(_call_command("watch.run", body))
 
 
+# ---- 黑名单（App 依赖）----
+@app.get("/api/blacklist")
+def api_blacklist_list() -> JSONResponse:
+    return JSONResponse(_call_command("blacklist.list", {}))
+
+
+@app.post("/api/blacklist/add")
+async def api_blacklist_add(body: dict[str, Any]) -> JSONResponse:
+    return JSONResponse(_call_command("blacklist.add", body))
+
+
+@app.post("/api/blacklist/remove")
+async def api_blacklist_remove(body: dict[str, Any]) -> JSONResponse:
+    return JSONResponse(_call_command("blacklist.remove", body))
+
+
+# ---- 信号引擎（App 依赖）----
+@app.get("/api/signals/list")
+def api_signals_list(only_banned: bool = False) -> JSONResponse:
+    return JSONResponse(_call_command("signals.list", {"only_banned": only_banned}))
+
+
+@app.post("/api/signals/unban")
+async def api_signals_unban(body: dict[str, Any]) -> JSONResponse:
+    return JSONResponse(_call_command("signals.unban", body))
+
+
 @app.post("/api/watch/run-all")
 async def api_watch_run_all() -> JSONResponse:
     return JSONResponse(_call_command("watch.run", {"all": True}))

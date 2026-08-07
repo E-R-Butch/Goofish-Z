@@ -1,0 +1,1 @@
+# Goofish-Z proguard rules

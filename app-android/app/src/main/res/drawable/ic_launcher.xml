@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Goofish-Z 图标：橙红色圆形 + 白色 Z -->
+    <path
+        android:fillColor="#FF5722"
+        android:pathData="M54,54m-50,0a50,50 0,1 1,100 0a50,50 0,1 1,-100 0" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M38,38h32v8h-20l20,26v-6h-32v-8h20l-20,-26z" />
+</vector>
