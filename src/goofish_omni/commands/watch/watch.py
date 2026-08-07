@@ -128,6 +128,12 @@ def watch_run(watch_id: int | None = None, all: bool = False, limit: int = 20,
         db.record_items(w["id"], passed)
         db.touch_check(w["id"])
 
+        # 自动黑名单信号引擎：给商品打信号标签，按卖家聚合，达阈值自动拉黑
+        from goofish_omni.signals import SellerSignalDB
+
+        sdb = SellerSignalDB(Path.home() / ".goofish-omni" / "watch.db")
+        auto_banned = _apply_signal_engine(sdb, items)
+
         # 告警判定（只针对通过黑名单的商品）
         alerts = []
         for it in passed:
@@ -157,6 +163,7 @@ def watch_run(watch_id: int | None = None, all: bool = False, limit: int = 20,
             "keyword": w["keyword"],
             "captured": len(passed),
             "blocked_count": len(blocked),
+            "auto_banned": auto_banned,
             "bargain_count": len(bargains),
             "bargains": bargains[:10],
             "blocked": [
@@ -247,3 +254,32 @@ def _fetch_seller_nick_via_page(item_id: str) -> str:
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[seller] 页面抓取卖家昵称失败 {item_id}: {e}")
         return ""
+
+def _apply_signal_engine(sdb, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """信号引擎：检测信号 → 按卖家聚合 → 自动拉黑。
+
+    返回带 _signals 标注的商品列表（供结果展示）。
+    只对有 seller_nick 的商品做卖家聚合（无昵称的仅标注，不聚合）。
+    """
+    # 批内中位价（供低价引流信号）
+    from goofish_omni.db import _to_float
+    from goofish_omni.signals import detect_signals
+
+    prices = [_to_float(it.get("price")) for it in items]
+    prices = [p for p in prices if p is not None]
+    median = sorted(prices)[len(prices) // 2] if prices else None
+
+    auto_banned: list[dict[str, Any]] = []
+    for it in items:
+        sigs = detect_signals(it, median)
+        it["_signals"] = sigs
+        if not sigs:
+            continue
+        nick = str(it.get("seller_nick", "") or "")
+        if nick:
+            sdb.record_signals(nick, str(it.get("item_id", "")), str(it.get("title", "")), sigs)
+            profile = sdb.get_profile(nick)
+            if profile and profile.get("auto_banned"):
+                auto_banned.append({"seller": nick, "score": profile.get("total_score"),
+                                    "signals": sigs})
+    return auto_banned
