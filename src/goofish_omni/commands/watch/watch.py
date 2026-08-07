@@ -96,6 +96,9 @@ def watch_run(watch_id: int | None = None, all: bool = False, limit: int = 20) -
         raise ValueError("需要 watch_id 或 --all")
 
     results = []
+    from goofish_omni.blacklist import BlacklistDB
+
+    bdb = BlacklistDB(Path.home() / ".goofish-omni" / "watch.db")
     for w in targets:
         try:
             items = search_cmd(str(w["keyword"]), limit=limit).get("items", [])
@@ -103,12 +106,14 @@ def watch_run(watch_id: int | None = None, all: bool = False, limit: int = 20) -
             results.append({"watch_id": w["id"], "keyword": w["keyword"], "error": str(e)})
             continue
 
-        db.record_items(w["id"], items)
+        # 黑名单过滤：屏蔽劣质商家，只对通过的商品落盘+告警
+        passed, blocked = bdb.filter_items(items)
+        db.record_items(w["id"], passed)
         db.touch_check(w["id"])
 
-        # 告警判定
+        # 告警判定（只针对通过黑名单的商品）
         alerts = []
-        for it in items:
+        for it in passed:
             price = _to_float(it.get("price"))
             if price is None:
                 continue

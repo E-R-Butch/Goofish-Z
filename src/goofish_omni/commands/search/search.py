@@ -156,9 +156,28 @@ async def _run(query: str, limit: int) -> list[dict[str, Any]]:
     strategy=Strategy.COOKIE,
     columns=["rank", "item_id", "title", "price", "condition", "brand", "location", "badge", "url"],
 )
-def search(query: str, limit: int = 20) -> dict[str, Any]:
+def search(query: str, limit: int = 20, filter_blacklist: bool = True) -> dict[str, Any]:
     items = asyncio.run(_run(str(query).strip(), _normalize_limit(limit)))
-    return {"items": items, "total": len(items), "query": query}
+    result: dict[str, Any] = {"items": items, "count": len(items)}
+
+    if filter_blacklist:
+        from goofish_omni.blacklist import BlacklistDB
+        from pathlib import Path
+
+        db = BlacklistDB(Path.home() / ".goofish-omni" / "watch.db")
+        passed, blocked = db.filter_items(items)
+        result["items"] = passed
+        result["count"] = len(passed)
+        result["blocked"] = [
+            {
+                "title": b.get("title", "")[:60],
+                "price": b.get("price"),
+                "reasons": b.get("_blocked_reasons", []),
+            }
+            for b in blocked
+        ]
+        result["blocked_count"] = len(blocked)
+    return result
 
 
 __test__ = {
