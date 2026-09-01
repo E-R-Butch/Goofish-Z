@@ -1,13 +1,13 @@
 """blacklist — 劣质商家屏蔽规则。过滤 search/watch 结果。"""
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from goofish_z.blacklist import BlacklistDB
+from goofish_z.core.paths import runtime_data_path
 from goofish_z.core.registry import command
 
-DEFAULT_DB = Path.home() / ".goofish-z" / "watch.db"
+DEFAULT_DB = runtime_data_path("watch.db")
 
 
 def _db() -> BlacklistDB:

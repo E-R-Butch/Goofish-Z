@@ -14,20 +14,27 @@ Material Design 3 安卓客户端 — 对接 Goofish-Z 后端（FastAPI :8787）
 ## 构建
 
 需要 Android Studio (Ladybug 或更新) / JDK 17：
-1. Android Studio 打开 `app-android/` 目录
-2. 等 Gradle 同步完成（首次下载依赖较慢）
-3. Run ▶ 到设备/模拟器
+1. `git clone https://github.com/E-R-Butch/Goofish-Z.git`
+2. Android Studio 打开 `Goofish-Z/app-android/` 目录
+3. 等 Gradle 同步完成（首次下载依赖较慢）
+4. Run ▶ 到设备/模拟器
 
 ## 连接后端
 
 1. 电脑上启动 Goofish-Z API：
    ```bash
-   cd ~/Documents/Projects/Goofish-Z
-   .venv/bin/goofish-z api   # 或 python -m goofish_z.api.app
+   cd Goofish-Z
+   python3 -m venv .venv
+   .venv/bin/pip install -e .
+   .venv/bin/python -m goofish_z.api.app
    ```
-2. 手机与电脑同一局域网
-3. App 设置页填 `http://<电脑局域网IP>:8787`
-4. 注意：Android 9+ 明文 HTTP 需 usesCleartextTraffic（已开启）
+2. USB 调试设备可执行 `adb reverse tcp:8787 tcp:8787`，App 保持默认
+   `http://127.0.0.1:8787`，无需把 API 暴露到局域网。
+3. 若确需局域网连接，只在受信任网络中显式配置监听地址和访问控制；不要暴露公网。
+4. Android 9+ 明文 HTTP 需 usesCleartextTraffic（开发配置已开启）。
+
+App 只调用本机 Goofish-Z API。账号、商品、Cookie、Token、会话和缓存都属于运行期
+本地数据，不进入 Android 源码或 GitHub；测试和截图也只能使用合成数据。
 
 ## 技术栈
 

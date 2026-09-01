@@ -1,13 +1,13 @@
 """signals — 自动黑名单信号引擎管理。"""
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
+from goofish_z.core.paths import runtime_data_path
 from goofish_z.core.registry import command
 from goofish_z.signals import AUTO_BAN_THRESHOLD, MIN_APPEARANCES, SellerSignalDB
 
-DEFAULT_DB = Path.home() / ".goofish-z" / "watch.db"
+DEFAULT_DB = runtime_data_path("watch.db")
 
 
 def _db() -> SellerSignalDB:

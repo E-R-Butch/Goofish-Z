@@ -6,7 +6,6 @@ cookie 路径：~/.goofish-z/cookies.json（可用 GOOFISH_Z_DATA 覆盖）。
 from __future__ import annotations
 
 import json
-import os
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,22 +15,20 @@ import requests
 from loguru import logger
 
 from goofish_z.core.errors import AuthRequiredError
+from goofish_z.core.paths import runtime_data_path
 from goofish_z.core.sign import generate_device_id, generate_sign
 
 
 def resolve_cookie_path(cookie_path: Path | str | None = None) -> Path:
     if cookie_path is not None:
         return Path(cookie_path)
-    data_dir = Path(os.environ.get("GOOFISH_Z_DATA", str(Path.home() / ".goofish-z")))
-    return data_dir / "cookies.json"
+    return runtime_data_path("cookies.json")
 
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 )
-
-DEVICE_CACHE_PATH = resolve_cookie_path().parent / "device_id.json"
 
 # 兼容上游命名
 DEFAULT_COOKIE_PATH = resolve_cookie_path()
@@ -66,7 +63,7 @@ class Session:
             http=http,
             unb=cookies["unb"],
             tracknick=cookies.get("tracknick", ""),
-            device_id=_load_or_mint_device_id(cookies["unb"]),
+            device_id=_load_or_mint_device_id(cookies["unb"], path.parent / "device_id.json"),
         )
 
     @property
@@ -178,19 +175,20 @@ def write_cookies_json(path: Path, cookies: dict[str, str] | list[dict[str, Any]
         pass
 
 
-def _load_or_mint_device_id(unb: str) -> str:
+def _load_or_mint_device_id(unb: str, cache_path: Path | None = None) -> str:
     """device_id 必须在 unb 维度稳定。"""
-    if DEVICE_CACHE_PATH.exists():
+    path = cache_path or runtime_data_path("device_id.json")
+    if path.exists():
         try:
-            raw = json.loads(DEVICE_CACHE_PATH.read_text())
+            raw = json.loads(path.read_text())
             if raw.get("unb") == unb and raw.get("device_id"):
                 return raw["device_id"]
         except (json.JSONDecodeError, OSError):
             pass
     device_id = generate_device_id(unb)
-    DEVICE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    DEVICE_CACHE_PATH.write_text(json.dumps({"unb": unb, "device_id": device_id}))
-    DEVICE_CACHE_PATH.chmod(0o600)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"unb": unb, "device_id": device_id}))
+    path.chmod(0o600)
     return device_id
 
 

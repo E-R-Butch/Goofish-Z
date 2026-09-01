@@ -224,7 +224,9 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True) -> dict[s
         from goofish_z.blacklist import BlacklistDB
         from pathlib import Path
 
-        db = BlacklistDB(Path.home() / ".goofish-z" / "watch.db")
+        from goofish_z.core.paths import runtime_data_path
+
+        db = BlacklistDB(runtime_data_path("watch.db"))
         passed, blocked = db.filter_items(items)
         result["items"] = passed
         result["count"] = len(passed)

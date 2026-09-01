@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from goofish_z.core.registry import discover, iter_commands
-from goofish_z.core.errors import GoofishError
+from goofish_z.core.errors import GoofishError, RateLimitedError
 
 app = FastAPI(title="goofish-omni", version="0.1.0")
 
@@ -52,6 +52,13 @@ def _call_command(full_name: str, params: dict[str, Any]) -> Any:
             valid[name] = val
     try:
         return cmd.func(**valid)
+    except RateLimitedError as e:
+        retry_after = max(1, int((e.retry_after or 1) + 0.999))
+        raise HTTPException(
+            429,
+            "请求过于频繁，请稍后重试",
+            headers={"Retry-After": str(retry_after)},
+        )
     except GoofishError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
@@ -77,6 +84,27 @@ def api_search(
     """搜索闲鱼商品。"""
     result = _call_command("search.items", {"query": q, "limit": limit})
     return JSONResponse(result)
+
+
+@app.get("/api/item/mine")
+def api_item_mine(
+    status: str = Query("online", description="online/sold/offline/all"),
+    limit: int = Query(20, ge=1, le=200),
+) -> JSONResponse:
+    """列出当前账号发布的商品，默认只返回在售。"""
+    return JSONResponse(_call_command("item.mine", {"status": status, "limit": limit}))
+
+
+@app.get("/api/item/get")
+def api_item_get(
+    item_id: str = Query(..., min_length=1, pattern=r"^\d+$", description="闲鱼商品 ID"),
+) -> JSONResponse:
+    """按商品 ID 读取详情；供 localhost 消费者按需补全字段。"""
+    result = _call_command("item.get", {"item_id": item_id})
+    if not isinstance(result, dict):
+        raise HTTPException(500, "item.get 返回结构非预期")
+    public_fields = ("item_id", "title", "price", "status", "detail")
+    return JSONResponse({field: result[field] for field in public_fields if field in result})
 
 
 @app.get("/api/watch")

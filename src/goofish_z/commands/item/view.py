@@ -174,7 +174,10 @@ async def _run(item_id: str) -> dict[str, Any]:
     ],
 )
 def view(item_id: str) -> dict[str, Any]:
+    from goofish_z.core.limiter import check as rate_check
+
     normalized = _normalize_item_id(item_id)
+    rate_check("detail")
     # MCP / table 渲染依赖 dict；image_urls 是列表（JSON 里保留，table 里压成长度）
     result = asyncio.run(_run(normalized))
     result["_image_urls_json"] = json.dumps(result.get("image_urls", []), ensure_ascii=False)

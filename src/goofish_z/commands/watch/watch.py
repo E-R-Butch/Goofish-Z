@@ -3,15 +3,15 @@ from __future__ import annotations
 
 import sys
 import time
-from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
+from goofish_z.core.paths import runtime_data_path
 from goofish_z.core.registry import command
 from goofish_z.db import WatchDB
 
-DEFAULT_DB = Path.home() / ".goofish-z" / "watch.db"
+DEFAULT_DB = runtime_data_path("watch.db")
 
 
 def _db() -> WatchDB:
@@ -102,7 +102,7 @@ def watch_run(watch_id: int | None = None, all: bool = False, limit: int = 20,
     from goofish_z.blacklist import BlacklistDB
     from goofish_z.core.guard import check as guard_check
 
-    bdb = BlacklistDB(Path.home() / ".goofish-z" / "watch.db")
+    bdb = BlacklistDB(DEFAULT_DB)
     for w in targets:
         # 熔断检查：一旦触发风控熔断，停止后续所有监控项（不硬闯）
         try:
@@ -131,7 +131,7 @@ def watch_run(watch_id: int | None = None, all: bool = False, limit: int = 20,
         # 自动黑名单信号引擎：给商品打信号标签，按卖家聚合，达阈值自动拉黑
         from goofish_z.signals import SellerSignalDB
 
-        sdb = SellerSignalDB(Path.home() / ".goofish-z" / "watch.db")
+        sdb = SellerSignalDB(DEFAULT_DB)
         auto_banned = _apply_signal_engine(sdb, items)
 
         # 告警判定（只针对通过黑名单的商品）
@@ -186,7 +186,7 @@ def _enrich_seller_nicks(items: list[dict[str, Any]], watch: dict[str, Any]) -> 
     from goofish_z.commands.item.view import view as item_view
     from goofish_z.core.errors import GoofishError
 
-    bdb = BlacklistDB(Path.home() / ".goofish-z" / "watch.db")
+    bdb = BlacklistDB(DEFAULT_DB)
     has_seller_rule = any(
         r["kind"] == "seller_nick" and r["enabled"]
         for r in bdb.list_rules()

@@ -13,12 +13,12 @@ import json
 import os
 import time
 from contextlib import contextmanager
-from pathlib import Path
 
 from goofish_z.core.errors import RiskControlError
+from goofish_z.core.paths import runtime_data_dir
 
 # 数据目录与 goofish-omni 统一（旧版 ~/.goofish-cli/ 已废弃）
-DATA_DIR = Path(os.environ.get("GOOFISH_Z_DATA", str(Path.home() / ".goofish-z")))
+DATA_DIR = runtime_data_dir()
 STATE_PATH = DATA_DIR / "circuit.json"
 
 # 分级冷却（秒）

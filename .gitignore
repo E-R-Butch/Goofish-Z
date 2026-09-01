@@ -1,4 +1,44 @@
 .venv/
 __pycache__/
 *.pyc
-data/
+
+# Runtime and business data belong on the local machine, never in this
+# public source repository.  The leading slash is intentional: Android's
+# `app/.../data/` package contains source code and must remain trackable.
+/data/
+/exports/
+/local/
+
+# Credentials and local session state.  Keep the Python source modules named
+# token.py/session.py trackable by matching data files and directories only.
+.env
+.env.*
+!.env.example
+**/*cookie*.json
+**/*token*.json
+**/*session*.json
+**/*login-state*.json
+**/*login_state*.json
+**/device_id.json
+**/limiter.json
+**/circuit.json
+**/goofish-cache.json
+**/manual-items.json
+**/goofish-exclusions.json
+**/goofish-overrides.json
+**/items.json
+**/listings.json
+**/inventory.json
+**/account*.json
+**/seller*.json
+/cookies/
+/tokens/
+/sessions/
+
+# Local databases and their SQLite sidecar files.
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*

@@ -14,11 +14,11 @@ import json
 import os
 import time
 from contextlib import contextmanager
-from pathlib import Path
 
 from goofish_z.core.errors import RateLimitedError
+from goofish_z.core.paths import runtime_data_dir
 
-DATA_DIR = Path(os.environ.get("GOOFISH_Z_DATA", str(Path.home() / ".goofish-z")))
+DATA_DIR = runtime_data_dir()
 STATE_PATH = DATA_DIR / "limiter.json"
 
 # bucket → (窗口秒数, 窗口内上限)。默认即安全值。
@@ -67,7 +67,8 @@ def check(bucket: str) -> float:
     if len(hits) >= limit:
         wait = window - (now - hits[0])
         raise RateLimitedError(
-            f"限流：bucket={bucket} 每 {window}s 上限 {limit}，再等 {wait:.1f}s"
+            f"限流：bucket={bucket} 每 {window}s 上限 {limit}，再等 {wait:.1f}s",
+            retry_after=max(0.0, wait),
         )
     hits.append(now)
     state[bucket] = hits[-limit:]  # 只保留窗口内的

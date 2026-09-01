@@ -15,19 +15,25 @@
 ## 快速开始
 
 ```bash
-# 安装
-cd ~/Documents/Projects/goofish-z
-/opt/homebrew/bin/python3.14 -m venv .venv
-.venv/bin/pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -e .
+# 克隆并安装
+git clone https://github.com/E-R-Butch/Goofish-Z.git
+cd Goofish-Z
+python3 -m venv .venv
+.venv/bin/pip install -e .
 
 # 认证（从 Chrome 自动抓 cookie，或复制 ~/.goofish-cli/cookies.json 到 ~/.goofish-z/）
 mkdir -p ~/.goofish-z && cp ~/.goofish-cli/cookies.json ~/.goofish-z/ 2>/dev/null
 
 # CLI
-.venv/bin/goofish-z search items "DDR3 RECC 32G" --limit 5
+.venv/bin/goofish-z search items "示例商品" --limit 5
+
+# 本人发布的商品（默认只返回仍在线的商品）
+.venv/bin/goofish-z item mine --limit 50
+.venv/bin/goofish-z item mine --status sold --limit 50
+.venv/bin/goofish-z item mine --status all --limit 200 --format json
 
 # 价格监控
-.venv/bin/goofish-z watch add "DDR3 RECC 32G" --max-price 160
+.venv/bin/goofish-z watch add "示例商品" --max-price 100
 .venv/bin/goofish-z watch run --all
 .venv/bin/goofish-z watch history 1
 
@@ -47,6 +53,24 @@ db.py      SQLite: watch_items / price_history / alerts
 ```
 
 认证自愈：请求 → 401 → `refresh_token()` 重签重试 → Chrome cookie 探测 → AuthRequiredError。
+
+`item mine` 直接读取个人主页列表接口的 `itemStatus`，不会把历史已售商品误判为在售；
+CLI、MCP（工具名 `item.mine`）和 HTTP API（`GET /api/item/mine`）共享同一实现。
+本机网站等只读消费者可通过 `GET /api/item/get?item_id=<商品ID>` 按需读取详情。
+该 HTTP 路由只返回消费方白名单字段，不返回底层原始响应或卖家账号字段。
+
+## 代码与运行期数据边界
+
+本公开仓库只保存通用工具代码、文档和合成测试数据。账号、Cookie、Token、会话、
+商品缓存、导出文件、价格历史和 SQLite 数据库都属于运行期本地数据，不得提交。
+
+- 默认运行目录是 `~/.goofish-z/`，也可通过 `GOOFISH_Z_DATA` 指向仓库外目录；
+  指向源码仓库内部会直接拒绝启动。Cookie、设备状态、限流/熔断状态和监控数据库
+  都使用同一个运行目录。
+- 仓库根目录下的 `data/`、`exports/` 和 `local/` 仅供本机使用，已被 Git 忽略。
+- 网站或其他本地消费者应通过 localhost 的只读 HTTP 接口调用本工具，不应把业务
+  JSON、商品图片或账号响应复制回本仓库。
+- 测试和示例必须使用明显的合成数据；提交前运行 `python scripts/check_public_repo.py`。
 
 ## 已知问题
 

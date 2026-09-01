@@ -31,6 +31,17 @@ class SignError(GoofishError):
 class RateLimitedError(GoofishError):
     exit_code = 75
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after: float | None = None,
+        raw: dict | None = None,
+        hint: str | None = None,
+    ):
+        super().__init__(message, raw=raw, hint=hint)
+        self.retry_after = retry_after
+
 
 class RiskControlError(GoofishError):
     """触发风控：RGV587 / punish / FAIL_SYS_USER_VALIDATE 等。"""
