@@ -1,6 +1,10 @@
 # Goofish-Z
 
-闲鱼工具：CLI、MCP、HTTP API、Web 监控台与 Android 客户端共享命令层。
+面向 PC 与 Agent 的闲鱼工具：通过 Web 监控台、CLI、MCP 和 HTTP API 使用同一套
+搜索、详情、监控与告警能力。
+
+当前优先维护 PC + Agent 使用体验。Android 客户端源码保留在 `app-android/`，
+APK 工作链迁移与进一步升级暂缓。
 
 ## 0.2.0 更新
 
@@ -17,6 +21,7 @@
 
 需要 Python 3.11+、Node.js 和系统 Google Chrome。搜索使用系统 Chrome，
 默认需要可显示窗口的桌面环境；不会使用用户正在打开的 Chrome profile。
+先在自己的 Chrome 中打开 [闲鱼](https://www.goofish.com) 并完成登录，再导入登录态：
 
 ```bash
 git clone https://github.com/E-R-Butch/Goofish-Z.git
@@ -24,8 +29,8 @@ cd Goofish-Z
 python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 .venv/bin/goofish-z doctor
-.venv/bin/goofish-z auth login --help
-.venv/bin/goofish-z auth login
+.venv/bin/goofish-z auth login --browser chrome
+.venv/bin/goofish-z auth status
 .venv/bin/python -m goofish_z.api.app
 ```
 
@@ -33,6 +38,31 @@ Web 面板为 `http://127.0.0.1:8787`。MCP 入口是 `.venv/bin/goofish-z-mcp`�
 首次登录或会话失效可能需要人工登录；自动刷新只做有限恢复，不保证永久在线。
 本版 MCP 已迁移到 2.1.1+ 的 `MCPServer`：支持新旧协议客户端，stdio 隔离可防止
 命令和子进程的普通输出污染协议流，见 [SDK 发布说明](https://github.com/modelcontextprotocol/python-sdk/releases/tag/v2.0.0)。
+
+`auth login --browser chrome` 读取本机 Chrome 的闲鱼相关 Cookie 并保存到外部运行
+目录；`auth status` 才会请求闲鱼验证当前会话。Cookie 文件存在本身不代表登录有效。
+需要其他导入方式时运行 `auth login --help`。
+
+## 接入 Agent
+
+在支持 stdio 的 MCP 客户端中配置入口，将下面的路径替换为实际安装目录的绝对路径：
+
+```json
+{
+  "mcpServers": {
+    "goofish-z": {
+      "command": "/absolute/path/Goofish-Z/.venv/bin/goofish-z-mcp",
+      "env": {
+        "GOOFISH_Z_HTTP": "http://127.0.0.1:8787"
+      }
+    }
+  }
+}
+```
+
+`search.items`、`item.get` 和 `auth.doctor` 等工具可直接调用。后台监控的
+`watch.start / job / jobs / cancel` 需要先启动上面的 HTTP 服务，与 PC 网页共享任务。
+如果配置了 `GOOFISH_Z_DATA`，HTTP、CLI 和 MCP 应指向同一个仓库外运行目录。
 
 ## 常用命令
 
@@ -113,6 +143,9 @@ Cookie 内容，也不自动刷新登录态；其登录结果只是最近一次 
 
 ## 验证
 
+0.2.0 已在全新 Python 3.14 环境通过 **54 项 Python 测试、5 项网页测试**，依赖检查
+无冲突。CI 配置覆盖 Python 3.11 和 3.14。可在本地复现离线测试：
+
 ```bash
 .venv/bin/python -m pip install -e '.[test]'
 .venv/bin/python -m unittest discover -s tests -v
@@ -124,3 +157,19 @@ node --test tests/gui.test.js
 旧数据库迁移、网页文本渲染，以及 MCP 新旧协议和命令/子进程输出隔离。
 Android 请求契约测试见 `app-android/`。
 离线测试不等同于真实闲鱼登录、搜索或交易验证；平台 DOM 与登录流程变化仍需实测。
+
+### PC + Agent 实测记录
+
+2026-09-04，在 macOS、系统 Chrome、Python 3.14 与 MCP SDK 2.1.1 环境下，
+导入已登录的 Chrome 会话，对 0.2.0 做了一次只读抽样验证：
+
+| 检查项 | 结果 |
+| --- | --- |
+| Chrome 登录态导入与账号验证 | 通过 |
+| PC HTTP 搜索 | 限量返回 3 条商品，标题与价格字段完整 |
+| MCP 连接与本地诊断 | 加载 37 个工具，返回结构化诊断与最近验证状态 |
+| Agent 商品详情 | 成功读取搜索所得商品，商品标识一致，标题与价格完整 |
+| PC / Agent 任务查询 | 两端返回相同任务列表 |
+
+本次查询未触发登录错误或风控提示。真实后台监控长时间运行、交易与商品写入不在
+本次实测范围内；账号、Cookie、商品返回内容及浏览器缓存不随代码发布。
