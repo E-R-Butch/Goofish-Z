@@ -1,4 +1,4 @@
-"""auth login — 导入闲鱼登录态到 ~/.goofish-cli/cookies.json。
+"""auth login — 导入闲鱼登录态到 ~/.goofish-z/cookies.json。
 
 默认行为（零参数）：从本机所有已装浏览器中自动探测 → 最低认知负荷。
 支持的浏览器：Chrome / Edge / Brave / Chromium / Opera / OperaGX / Vivaldi
@@ -21,10 +21,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from goofish_z.core import Strategy, command
 from goofish_z.core.errors import AuthRequiredError
-from goofish_z.core.session import DEFAULT_COOKIE_PATH, write_cookies_json
+from goofish_z.core.session import resolve_cookie_path, write_cookies_json, goofish_cookie_values
 
 
 @command(
@@ -42,7 +43,7 @@ def login(
     qr: bool = False,
     qr_timeout: int | None = None,
 ) -> dict[str, object]:
-    target = DEFAULT_COOKIE_PATH
+    target = resolve_cookie_path()
 
     if qr:
         # QR 和其它来源互斥：QR 会起独立 Playwright 浏览器，source / --raw / 指定
@@ -84,9 +85,9 @@ def login(
         source_label = f"file:{p}"
 
     if isinstance(cookies, list):
-        # 扫码路径：保留完整字段（含 domain）的 list 格式
-        names = {c.get("name") for c in cookies}
-        if "unb" not in names or "_m_h5_tk" not in names:
+        # 浏览器、文件和扫码路径均保留原始 domain/path，不能按 cookie 名覆盖。
+        values = goofish_cookie_values(cookies)
+        if not values.get("unb") or not values.get("_m_h5_tk"):
             raise AuthRequiredError(
                 "cookie 缺失关键字段 unb / _m_h5_tk。"
                 "请先在浏览器里登录 https://www.goofish.com 再试。"
@@ -95,8 +96,8 @@ def login(
         return {
             "source": source_label,
             "path": str(target),
-            "unb": next(c["value"] for c in cookies if c.get("name") == "unb"),
-            "tracknick": next((c["value"] for c in cookies if c.get("name") == "tracknick"), ""),
+            "unb": values["unb"],
+            "tracknick": values.get("tracknick", ""),
             "cookies_count": len(cookies),
         }
 
@@ -117,7 +118,7 @@ def login(
     }
 
 
-def _pull_from_browser(browser: str) -> tuple[dict[str, str], str]:
+def _pull_from_browser(browser: str) -> tuple[list[dict[str, Any]], str]:
     from goofish_z.core.browser_cookie import (
         BrowserCookieError,
         available_browsers,
@@ -149,10 +150,10 @@ def _parse_raw(raw: str) -> dict[str, str]:
     return out
 
 
-def _parse_json(text: str) -> dict[str, str]:
+def _parse_json(text: str) -> dict[str, str] | list[dict[str, Any]]:
     data = json.loads(text)
     if isinstance(data, list):
-        return {c["name"]: c["value"] for c in data if "name" in c and "value" in c}
+        return [c for c in data if isinstance(c, dict) and "name" in c and "value" in c]
     if isinstance(data, dict):
         return {str(k): str(v) for k, v in data.items()}
     raise AuthRequiredError("cookie JSON 格式不识别（需 list 或 dict）")

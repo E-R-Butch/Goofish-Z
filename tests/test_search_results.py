@@ -65,7 +65,7 @@ class SearchResultsTest(OfflineCase):
 
     def test_browser_result_normalizes_price_for_all_clients(self):
         page = MagicMock()
-        page.goto = page.wait_for_timeout = AsyncMock()
+        page.goto = page.wait_for_timeout = page.wait_for_load_state = AsyncMock()
         page.evaluate = AsyncMock(return_value={"items": [fixture("¥2.42万")],
                                                "has_next": True, "page": 1, "source_count": 30})
         @asynccontextmanager
@@ -77,6 +77,17 @@ class SearchResultsTest(OfflineCase):
         self.assertEqual(result["items"][0]["price"], "¥24200")
         self.assertEqual(result["items"][0]["price_value"], 24200)
         self.assertEqual(result["items"][0]["price_text"], "¥2.42万")
+
+    def test_auth_redirect_retries_dom_read_once_without_another_navigation(self):
+        from playwright.async_api import Error as BrowserError
+        page = MagicMock()
+        page.wait_for_timeout = page.wait_for_load_state = AsyncMock()
+        page.evaluate = AsyncMock(side_effect=[BrowserError("Execution context was destroyed"), {"items": [fixture()]}])
+        with patch.object(self.search, "auto_scroll", AsyncMock()):
+            result = asyncio.run(self.search._read_search_page(page, 30))
+        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(page.evaluate.await_count, 2)
+        page.goto.assert_not_called()
 
     def test_units_are_used_by_history_and_threshold_alerts(self):
         db = WatchDB(self.watch.DEFAULT_DB)

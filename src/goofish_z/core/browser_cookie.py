@@ -36,7 +36,7 @@ ALLOWED_HOSTS = (
     "alibaba.com", "alicdn.com", "aliyun.com", "mmstat.com",
 )
 
-# 至少要拿到这些字段才算"登录态有效"
+# 导入所需字段；是否登录有效仍需真实请求验证。
 REQUIRED_KEYS = ("unb", "_m_h5_tk")
 
 
@@ -81,7 +81,7 @@ def _get_loader(browser: str):
 
 # ── 单个浏览器的 in-process / subprocess 双路 ────────────────────────────
 
-def _extract_in_process(browser: str) -> dict[str, str] | None:
+def _extract_in_process(browser: str) -> list[dict[str, Any]] | None:
     """直接 import browser_cookie3 调 loader。
 
     注意：对 `BrowserCookieError`（未知浏览器名）会直接 re-raise，让调用方
@@ -96,14 +96,14 @@ def _extract_in_process(browser: str) -> dict[str, str] | None:
         logger.trace(f"{browser} in-process 抽取失败：{e}")
         return None
 
-    return _jars_to_dict(jars)
+    return _jars_to_entries(jars)
 
 
-def _extract_via_subprocess(browser: str) -> dict[str, str] | None:
+def _extract_via_subprocess(browser: str) -> list[dict[str, Any]] | None:
     """fork 子进程跑 browser_cookie3。macOS Keychain 对主进程和子进程的
     授权作用域有时不一致，子进程兜底能救一些 Edge Case（也是 xhs-cli 的做法）。
 
-    allowed_hosts 通过 argv 传进子进程，和 _jars_to_dict 用同一个常量，避免
+    allowed_hosts 通过 argv 传进子进程，和 _jars_to_entries 用同一个常量，避免
     两条路径筛出的字段集漂移。
     """
     script = '''
@@ -125,11 +125,16 @@ for d in domains:
     try:
         for c in loader(domain_name=d):
             host = (c.domain or "").lstrip(".")
-            if any(h in host for h in hosts):
-                out[c.name] = c.value
+            if any(host == h or host.endswith("." + h) for h in hosts) and not c.is_expired():
+                entry = {"name": c.name, "value": c.value, "domain": c.domain,
+                         "path": c.path or "/", "secure": bool(c.secure),
+                         "httpOnly": c.has_nonstandard_attr("HttpOnly") or c.has_nonstandard_attr("HTTPOnly")}
+                if c.expires is not None:
+                    entry["expires"] = c.expires
+                out[(c.name, c.domain, c.path or "/")] = entry
     except Exception as e:
         print(json.dumps({"error": f"extract-fail:{e}"})); sys.exit(0)
-print(json.dumps({"cookies": out}))
+print(json.dumps({"cookies": list(out.values())}))
 '''
     try:
         result = subprocess.run(
@@ -164,45 +169,29 @@ print(json.dumps({"cookies": out}))
     return data.get("cookies") or None
 
 
-def _jars_to_dict(jars: list[Any]) -> dict[str, str]:
-    """从多个 CookieJar 合并筛出阿里系域 cookie。
-
-    返回 {name: value} 扁平格式（兼容旧调用方）。注意：这会丢失 domain 信息，
-    注入 playwright 时按名字猜域可能猜错（cookie2 等淘系 cookie 来自
-    .taobao.com 还是 .goofish.com 取决于来源）。如需保留 domain 用
-    `_jars_to_entries`。
-    """
-    out: dict[str, str] = {}
-    for jar in jars:
-        for cookie in jar:
-            host = (cookie.domain or "").lstrip(".")
-            if not any(h in host for h in ALLOWED_HOSTS):
-                continue
-            # 同名后写覆盖前 —— 这里没法判优先级，实测取到 unb/_m_h5_tk 都 OK
-            out[cookie.name] = cookie.value
-    return out
-
-
 def _jars_to_entries(jars: list[Any]) -> list[dict[str, Any]]:
     """从多个 CookieJar 合并筛出阿里系域 cookie，保留完整字段（含 domain）。"""
-    out: dict[str, dict[str, Any]] = {}
+    out: dict[tuple[str, str, str], dict[str, Any]] = {}
     for jar in jars:
         for cookie in jar:
             host = (cookie.domain or "").lstrip(".")
-            if not any(h in host for h in ALLOWED_HOSTS):
+            if not any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS) or cookie.is_expired():
                 continue
-            out[cookie.name] = {
+            entry = {
                 "name": cookie.name,
                 "value": cookie.value,
                 "domain": cookie.domain or "",
                 "path": cookie.path or "/",
                 "secure": bool(cookie.secure),
-                "httpOnly": bool(cookie.has_nonstandard_attr("HttpOnly")) or bool(getattr(cookie, "_rest", {}).get("HttpOnly")),
+                "httpOnly": cookie.has_nonstandard_attr("HttpOnly") or cookie.has_nonstandard_attr("HTTPOnly"),
             }
+            if cookie.expires is not None:
+                entry["expires"] = cookie.expires
+            out[(cookie.name, cookie.domain or "", cookie.path or "/")] = entry
     return list(out.values())
 
 
-def _try_browser(browser: str) -> dict[str, str] | None:
+def _try_browser(browser: str) -> list[dict[str, Any]] | None:
     """顺序走 in-process → subprocess。任一路径拿到 REQUIRED_KEYS 就返回。
 
     包住 _extract_in_process 的 BrowserCookieError —— auto 模式下反射出的
@@ -221,8 +210,10 @@ def _try_browser(browser: str) -> dict[str, str] | None:
     return None
 
 
-def _is_valid(cookies: dict[str, str]) -> bool:
-    return all(k in cookies and cookies[k] for k in REQUIRED_KEYS)
+def _is_valid(cookies: list[dict[str, Any]]) -> bool:
+    from goofish_z.core.session import goofish_cookie_values
+    values = goofish_cookie_values(cookies)
+    return all(values.get(k) for k in REQUIRED_KEYS)
 
 
 # ── 对外主入口 ────────────────────────────────────────────────────────────
@@ -231,10 +222,10 @@ def extract_goofish_cookies(
     browser: str = "auto",
     *,
     max_workers: int = 4,
-) -> tuple[str, dict[str, str]]:
+) -> tuple[str, list[dict[str, Any]]]:
     """抽闲鱼登录态。
 
-    返回 (browser_name, cookies)。
+    返回 (browser_name, cookies)，保留 domain/path 及同名不同域的条目。
 
     browser:
       - 'auto'：并发尝试所有已装浏览器，第一个拿到有效 cookie 的就用

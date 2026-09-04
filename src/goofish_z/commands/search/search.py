@@ -176,16 +176,13 @@ async def _run(query: str, limit: int, page_number: int = 1) -> dict[str, Any]:
     url = _build_search_url(query)
     async with goofish_page() as page:
         await page.goto(url, wait_until="domcontentloaded")
-        await page.wait_for_timeout(2000)
-        await auto_scroll(page, times=2)
-        payload = await page.evaluate(_EXTRACT_JS, limit)
+        payload = await _read_search_page(page, limit)
         _check_payload(payload)
         if page_number > 1:
             if not payload.get("has_next"):
                 raise GoofishError("没有更多搜索结果")
             await _go_to_page(page, page_number)
-            await auto_scroll(page, times=2)
-            payload = await page.evaluate(_EXTRACT_JS, limit)
+            payload = await _read_search_page(page, limit)
             _check_payload(payload)
             if payload.get("page") != page_number:
                 raise GoofishError("闲鱼返回的页码不匹配，请重新搜索")
@@ -201,6 +198,23 @@ async def _run(query: str, limit: int, page_number: int = 1) -> dict[str, Any]:
         "has_next": bool(payload.get("has_next")) and page_number < MAX_PAGE,
         "source_count": payload.get("source_count", len(items)),
     }
+
+
+async def _read_search_page(page: Any, limit: int) -> dict[str, Any]:
+    """An authentication redirect can replace the DOM during the first read."""
+    from playwright.async_api import Error as BrowserError
+
+    for attempt in range(2):
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=15000)
+            await page.wait_for_timeout(2000)
+            await auto_scroll(page, times=2)
+            return await page.evaluate(_EXTRACT_JS, limit)
+        except BrowserError as error:
+            if attempt or "Execution context was destroyed" not in str(error):
+                raise
+            # Read the new document once; do not re-submit a search or dismiss login.
+    raise GoofishError("搜索页跳转未完成")
 
 
 def _check_payload(payload: Any) -> None:
