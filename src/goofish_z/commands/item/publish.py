@@ -62,7 +62,7 @@ def publish(
         location=loc,
     )
 
-    with acquire("item.write"), watch():
+    with acquire("write"), watch():
         raw = call(
             session,
             api="mtop.idle.pc.idleitem.publish",

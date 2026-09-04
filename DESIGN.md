@@ -1,98 +1,22 @@
-# goofish-z — 闲鱼全功能整合包
+# Goofish-Z 架构
 
-> 博采众长：goofish-cli（CLI/MCP/registry 架构）+ XianYuApis（refresh_token 自动维持）
-> + ai-goofish-monitor（监控/UI 思路）。一库双驱：GUI 可点，Agent 可调。
+CLI、MCP、HTTP API 调用共享 registry 命令。同步命令在 API/MCP 工作线程执行；
+每次浏览器调用拥有独立 Playwright 实例与临时 Chrome profile，不跨线程共享浏览器对象。
 
-## 设计目标
+Web 通过 HTTP 提交监控任务，CLI/MCP 的 watch.start / job / jobs / cancel 也访问
+同一服务。后台单工作线程调用与同步 CLI 相同的轮询实现。
+单进程只接受一个活动后台任务，任务进度保留最近 50 条；重启不会隐式重放未完成任务。
+调用方轮询任务状态并可请求取消，取消在限流等待时立即响应，在网络请求后检查。
 
-1. **双驱动**：同一套命令层，同时暴露给
-   - GUI：本地 Web 面板（搜索/监控/消息/商品管理）
-   - Agent：MCP（Hermes 原生）+ CLI（terminal）+ HTTP API（curl/脚本）
-2. **认证自愈**：token 过期自动刷新（移植 XianYuApis refresh_token），7×24 不掉线
-3. **价格监控**：定时搜索 + SQLite 历史落盘 + 变更告警（生态空白点）
+MCP 使用 2.x MCPServer，保留共享 registry 的命令签名与结构化结果；通过实际 stdio
+子进程验证旧版握手和新版协议，以及普通打印和子进程输出不会污染协议流。
 
-## 架构分层
+监控流程：熔断检查 → 搜索（限流时等待）→ 可选卖家补查 → 信号更新 → 规则过滤 →
+同一 SQLite 事务写入历史、阈值状态和告警。失败不更新上次成功检查时间。
+缺失搜索结果不代表商品状态改变；缺失卖家标识不触发身份推断。
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                     双驱动入口                            │
-│   GUI (Web面板)        Agent (MCP / CLI / HTTP API)      │
-└───────────┬─────────────────────────┬────────────────────┘
-            │                         │
-┌───────────▼─────────────────────────▼────────────────────┐
-│  api/  FastAPI 层                                        │
-│  /api/search /api/watch /api/message /api/item           │
-│  /api/auth  + 静态前端挂载                                │
-└───────────┬──────────────────────────────────────────────┘
-            │
-┌───────────▼──────────────────────────────────────────────┐
-│  commands/  命令层 (每个命令 = registry 注册, 三通道共享)  │
-│  auth/ item/ search/ message/ watch/ media/ location/    │
-└───────────┬──────────────────────────────────────────────┘
-            │
-┌───────────▼──────────────────────────────────────────────┐
-│  core/  核心层                                           │
-│  sign.py     签名 (execjs 桥接 goofish_js_version_2.js)  │
-│  session.py  会话 + refresh_token 自动维持 (XianYuApis)  │
-│  limiter.py  写操作令牌桶 (1/min)                        │
-│  guard.py    风控熔断                                    │
-│  registry.py 命令注册表 (CLI+MCP+API 三通道自动注册)      │
-└───────────┬──────────────────────────────────────────────┘
-            │
-┌───────────▼──────────────────────────────────────────────┐
-│  db.py  SQLite: watch_items / price_history / messages   │
-└──────────────────────────────────────────────────────────┘
-```
+限流使用统一 bucket，状态更新持有跨进程文件锁并通过原子替换持久化；旧版写操作
+bucket 的近期预约被合并保留。熔断更新不会缩短已生效的更长冷却。状态损坏停止请求。
 
-## 命令 → 三通道映射
-
-| 命令 | CLI | MCP | API | 说明 |
-|---|---|---|---|---|
-| auth login/status | ✅ | ✅ | POST /api/auth | Chrome cookie 探测 + QR |
-| search items | ✅ | ✅ | GET /api/search | 商品搜索 |
-| watch add/list/rm | ✅ | ✅ | GET/POST /api/watch | 价格监控 |
-| watch history | ✅ | ✅ | GET /api/watch/history | 价格曲线 |
-| message list/send | ✅ | ✅ | GET/POST /api/message | 消息 |
-| item get/publish | ✅ | ✅ | GET/POST /api/item | 商品 |
-
-## 认证自愈机制（核心创新）
-
-```
-请求 → 401/FAIL_SYS_TOKEN_EXOIRED
-     → session.refresh_token()   # 用 _m_h5_tk 前半段重签
-     → 成功: 更新 cookie 重试原请求
-     → 失败: 尝试 Chrome cookie 探测
-     → 再失败: 返回 AuthRequiredError, 等 GUI/Agent 干预
-```
-
-## 技术选型
-
-- Python 3.11 (uv 管理，避免 Homebrew python 升级断链)
-- typer CLI + FastMCP (MCP) + FastAPI (API/GUI)
-- execjs + goofish_js_version_2.js（与上游同源，MD5 已验证一致）
-- SQLite（零依赖落盘）
-- 前端：单页原生 JS（无构建步骤，FastAPI 静态挂载）
-
-## 项目结构
-
-```
-goofish-z/
-├── pyproject.toml
-├── src/goofish_z/
-│   ├── core/       # sign/session/limiter/guard/registry
-│   ├── commands/   # auth/item/search/message/watch/media/location
-│   ├── api/        # FastAPI app + routes
-│   ├── gui/        # 静态前端
-│   ├── db.py
-│   ├── cli.py      # typer 入口
-│   └── mcp_server.py
-├── static/goofish_js_version_2.js
-└── data/           # cookies.json + watch.db
-```
-
-## 里程碑
-
-1. M1: 骨架 + core 移植 (sign/session/refresh_token) + CLI 跑通
-2. M2: watch 监控模块 + SQLite 落盘 + 告警
-3. M3: FastAPI + GUI 面板
-4. M4: MCP 接入 Hermes + 端到端验证
+运行数据全部位于仓库外；公开源码与合成测试由 check_public_repo.py 检查。
+服务诊断仅检查本地能力与最近账号验证记录，存活探针不宣称账号登录有效。

@@ -5,10 +5,12 @@ import subprocess
 from functools import lru_cache, partial
 from importlib.resources import files
 
-# 静默 Windows 编码问题（跨平台无害）
-subprocess.Popen = partial(subprocess.Popen, encoding="utf-8")
+import execjs
+import execjs._external_runtime as _execjs_runtime
 
-import execjs  # noqa: E402  必须在 subprocess 补丁之后
+# Keep UTF-8 for the JavaScript bridge without changing the process-wide Popen
+# class, which MCP and binary subprocess callers rely on.
+_execjs_runtime.Popen = partial(subprocess.Popen, encoding="utf-8")
 
 
 @lru_cache(maxsize=1)

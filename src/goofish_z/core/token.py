@@ -2,7 +2,7 @@
 
 用于 WebSocket 鉴权（/reg 阶段）。不同于 HTTP 的 _m_h5_tk，这个 token 是给 IM 长连用的。
 
-accessToken 会被缓存到 ~/.goofish-cli/im_token.json（TTL 由 GOOFISH_TOKEN_TTL 控制，默认 30 分钟）。
+accessToken 会被缓存到 ~/.goofish-z/im_token.json（TTL 由 GOOFISH_TOKEN_TTL 控制，默认 30 分钟）。
 闲鱼风控对 `mtop.taobao.idlemessage.pc.login.token` 比较敏感，高频调用会 RGV587。
 """
 
@@ -15,9 +15,10 @@ from typing import Any
 from goofish_z.core.errors import AuthRequiredError
 from goofish_z.core.mtop import call
 from goofish_z.core.session import Session
+from goofish_z.core.paths import runtime_data_path
 
 IM_APP_KEY = "444e9908a51d1cb236a27862abc769c9"
-TOKEN_CACHE = Path.home() / ".goofish-cli" / "im_token.json"
+TOKEN_CACHE = runtime_data_path("im_token.json")
 DEFAULT_TTL = 30 * 60  # 30 分钟，远低于真实 token 过期（观察约 2h）
 
 
@@ -55,6 +56,9 @@ def get_access_token(session: Session, *, force_refresh: bool = False) -> str:
     支持注入原因：`mtop.taobao.idlemessage.pc.login.token` 风控非常敏感，
     完成滑块后 web 端自己持有的 token 可以直接拷出来塞给 CLI 用。
     """
+    from goofish_z.core.guard import check as guard_check
+
+    guard_check()
     env_token = os.environ.get("GOOFISH_IM_TOKEN", "").strip()
     if env_token:
         return env_token

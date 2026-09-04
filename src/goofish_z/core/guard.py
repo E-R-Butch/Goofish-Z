@@ -9,13 +9,13 @@
 """
 from __future__ import annotations
 
-import json
 import os
 import time
 from contextlib import contextmanager
 
 from goofish_z.core.errors import RiskControlError
 from goofish_z.core.paths import runtime_data_dir
+from goofish_z.core.state_file import read_state, state_lock, write_state
 
 # 数据目录与 goofish-omni 统一（旧版 ~/.goofish-cli/ 已废弃）
 DATA_DIR = runtime_data_dir()
@@ -50,24 +50,18 @@ def _break_seconds(level: str) -> int:
     env = os.environ.get("GOOFISH_CIRCUIT_BREAK_MINUTES")
     if env:
         try:
-            return max(60, int(env)) * 60
+            return max(1, int(env)) * 60
         except ValueError:
             pass
     return LEVELS.get(level, LEVELS[DEFAULT_LEVEL])
 
 
 def _load() -> dict:
-    if not STATE_PATH.exists():
-        return {}
-    try:
-        return json.loads(STATE_PATH.read_text())
-    except (json.JSONDecodeError, OSError):
-        return {}
+    return read_state(STATE_PATH)
 
 
 def _save(state: dict) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+    write_state(STATE_PATH, state)
 
 
 def check() -> None:
@@ -79,7 +73,7 @@ def check() -> None:
         raise RiskControlError(
             f"风控熔断中（{state.get('level','med')}级），剩余 {remain}s。"
             f"原因：{state.get('reason','')}。"
-            f"可 `goofish-omni auth reset-guard` 手动解除。"
+            f"可 `goofish-z auth reset-guard` 手动解除。"
         )
 
 
@@ -87,21 +81,22 @@ def trip(reason: str = "", api: str = "") -> None:
     """触发熔断。按风控等级冷却，并记录统计。"""
     level = classify_level(reason)
     until = time.time() + _break_seconds(level)
-    state = _load()
-    hits = int(state.get("hits", 0)) + 1
-    _save({
-        "until": until,
-        "level": level,
-        "reason": reason[:200],
-        "api": api,
-        "tripped_at": time.time(),
-        "hits": hits,
-    })
+    with state_lock(STATE_PATH):
+        state = _load()
+        hits = int(state.get("hits", 0)) + 1
+        if float(state.get("until", 0)) > until:
+            state["hits"] = hits
+            _save(state)
+        else:
+            _save({
+                "until": until, "level": level, "reason": reason[:200],
+                "api": api, "tripped_at": time.time(), "hits": hits,
+            })
 
 
 def reset() -> None:
-    if STATE_PATH.exists():
-        STATE_PATH.unlink()
+    with state_lock(STATE_PATH):
+        STATE_PATH.unlink(missing_ok=True)
 
 
 def status() -> dict:

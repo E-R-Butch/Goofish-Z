@@ -74,12 +74,18 @@ data class WatchListResponse(
 
 @Serializable
 data class WatchRunResponse(
+    val status: String = "",
+    val succeeded: Int = 0,
+    val failed: Int = 0,
+    val skipped: Int = 0,
+    val error: String? = null,
     val results: List<WatchRunResult> = emptyList(),
     val ran_at: String = "",
 )
 
 @Serializable
 data class WatchRunResult(
+    val status: String = "",
     val watch_id: Int = 0,
     val keyword: String = "",
     val captured: Int = 0,
@@ -152,3 +158,24 @@ data class OkResponse(
 data class ApiError(
     val detail: String = "",
 )
+
+@Serializable
+data class WatchProgress(
+    val phase: String = "",
+    val completed: Int = 0,
+    val total: Int = 0,
+    val keyword: String = "",
+    val retry_after: Double = 0.0,
+)
+
+@Serializable
+data class WatchJob(
+    val id: String,
+    val status: String = "queued",
+    val progress: WatchProgress = WatchProgress(),
+    val result: WatchRunResponse? = null,
+    val cancel_requested: Boolean = false,
+)
+
+@Serializable
+data class WatchJobsResponse(val jobs: List<WatchJob> = emptyList())

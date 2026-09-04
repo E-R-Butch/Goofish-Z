@@ -10,13 +10,13 @@
 """
 from __future__ import annotations
 
-import json
 import os
 import time
 from contextlib import contextmanager
 
 from goofish_z.core.errors import RateLimitedError
 from goofish_z.core.paths import runtime_data_dir
+from goofish_z.core.state_file import read_state, state_lock, write_state
 
 DATA_DIR = runtime_data_dir()
 STATE_PATH = DATA_DIR / "limiter.json"
@@ -30,8 +30,17 @@ BUCKETS: dict[str, tuple[int, int]] = {
 }
 
 
+def _canonical_bucket(bucket: str) -> str:
+    if bucket in ("item.write", "message.write", "media.write"):
+        return "write"
+    if bucket not in BUCKETS:
+        raise ValueError(f"未知限流 bucket: {bucket}")
+    return bucket
+
+
 def _bucket_conf(bucket: str) -> tuple[int, int]:
-    window, limit = BUCKETS.get(bucket, (10, 1))
+    bucket = _canonical_bucket(bucket)
+    window, limit = BUCKETS[bucket]
     # 环境变量可覆盖：GOOFISH_LIMIT_<BUCKET>_SEC / _RPM
     try:
         window = int(os.environ.get(f"GOOFISH_LIMIT_{bucket.upper()}_SEC", window))
@@ -45,34 +54,35 @@ def _bucket_conf(bucket: str) -> tuple[int, int]:
 
 
 def _load() -> dict[str, list[float]]:
-    if not STATE_PATH.exists():
-        return {}
-    try:
-        return json.loads(STATE_PATH.read_text())
-    except (json.JSONDecodeError, OSError):
-        return {}
+    state = read_state(STATE_PATH)
+    # Keep recent reservations made by earlier versions under legacy names.
+    for legacy in ("item.write", "message.write", "media.write"):
+        if legacy in state:
+            state.setdefault("write", []).extend(state.pop(legacy))
+    return state
 
 
 def _save(state: dict[str, list[float]]) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(state))
+    write_state(STATE_PATH, state)
 
 
 def check(bucket: str) -> float:
-    """消耗一个令牌。超限返回还需等待的秒数（>0 = 需要等）。"""
-    now = time.time()
+    """原子地消耗一个令牌；超限抛出带 retry_after 的异常。"""
+    bucket = _canonical_bucket(bucket)
     window, limit = _bucket_conf(bucket)
-    state = _load()
-    hits = [t for t in state.get(bucket, []) if now - t < window]
-    if len(hits) >= limit:
-        wait = window - (now - hits[0])
-        raise RateLimitedError(
-            f"限流：bucket={bucket} 每 {window}s 上限 {limit}，再等 {wait:.1f}s",
-            retry_after=max(0.0, wait),
-        )
-    hits.append(now)
-    state[bucket] = hits[-limit:]  # 只保留窗口内的
-    _save(state)
+    with state_lock(STATE_PATH):
+        now = time.time()
+        state = _load()
+        hits = sorted(t for t in state.get(bucket, []) if now - t < window)
+        if len(hits) >= limit:
+            wait = window - (now - hits[-limit])
+            raise RateLimitedError(
+                f"限流：bucket={bucket} 每 {window}s 上限 {limit}，再等 {wait:.1f}s",
+                retry_after=max(0.0, wait),
+            )
+        hits.append(now)
+        state[bucket] = hits
+        _save(state)
     return 0.0
 
 
@@ -87,12 +97,13 @@ def status() -> dict[str, dict]:
     state = _load()
     now = time.time()
     out = {}
-    for bucket, (window, limit) in BUCKETS.items():
-        hits = [t for t in state.get(bucket, []) if now - t < window]
+    for bucket in BUCKETS:
+        window, limit = _bucket_conf(bucket)
+        hits = sorted(t for t in state.get(bucket, []) if now - t < window)
         out[bucket] = {
             "recent": len(hits),
             "limit": limit,
             "window_sec": window,
-            "next_available_in": max(0, window - (now - hits[0])) if hits else 0,
+            "next_available_in": max(0, window - (now - hits[-limit])) if len(hits) >= limit else 0,
         }
     return out

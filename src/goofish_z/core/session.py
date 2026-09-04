@@ -50,7 +50,7 @@ class Session:
         if "unb" not in cookies or "_m_h5_tk" not in cookies:
             raise AuthRequiredError(
                 f"cookie 缺失 unb / _m_h5_tk，检查 {path} 是否完整（建议先在浏览器登录 "
-                f"https://www.goofish.com 后再试 `goofish-omni auth login`）"
+                f"https://www.goofish.com 后再试 `goofish-z auth login`）"
             )
         http = requests.Session()
         for name, value in cookies.items():
@@ -74,6 +74,9 @@ class Session:
     # ---- goofish-omni 增强：认证自愈 ----
     def refresh_token(self) -> bool:
         """刷新登录态（移植 XianYuApis）。成功返回 True，并持久化新 cookie。"""
+        from goofish_z.core.guard import check as guard_check
+
+        guard_check()
         if not self.http.cookies.get("unb"):
             return False
 
@@ -148,7 +151,7 @@ def _load_or_bootstrap_cookies(path: Path) -> dict[str, str]:
             return cookies
     except Exception as e:  # noqa: BLE001
         logger.debug(f"Chrome cookie 自动抓取失败: {e}")
-    raise AuthRequiredError(f"未找到有效 cookie，请先执行 goofish-omni auth login（或检查 {path}）")
+    raise AuthRequiredError(f"未找到有效 cookie，请先执行 goofish-z auth login（或检查 {path}）")
 
 
 def write_cookies_json(path: Path, cookies: dict[str, str] | list[dict[str, Any]]) -> None:

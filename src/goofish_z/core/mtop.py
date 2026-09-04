@@ -79,6 +79,9 @@ def call(
     passport 弹窗的"快速进入"免密登录刷新 cookie 后重试一次。递归调用时置 False
     避免死循环。
     """
+    from goofish_z.core.guard import check as guard_check
+
+    guard_check()
     url = f"{MTOP_HOST}/h5/{api}/{version}/"
     t_ms = str(int(time.time() * 1000))
     data_val = data if isinstance(data, str) else json.dumps(data, separators=(",", ":"))

@@ -18,6 +18,7 @@ import json
 import re
 import sqlite3
 import time
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -32,10 +33,12 @@ class BlacklistDB:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init()
 
-    def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    @contextmanager
+    def _conn(self):
+        with closing(sqlite3.connect(self.db_path, timeout=30)) as conn:
+            conn.row_factory = sqlite3.Row
+            with conn:
+                yield conn
 
     def _init(self) -> None:
         with self._conn() as conn:
@@ -81,8 +84,15 @@ class BlacklistDB:
         "低价引流"（价格显著低于同类）。
         """
         rules = [r for r in self.list_rules() if r["enabled"]]
-        if not rules:
-            return items, []
+        with self._conn() as conn:
+            has_profiles = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='seller_profiles'"
+            ).fetchone()
+            banned_sellers = {
+                row["seller_nick"] for row in conn.execute(
+                    "SELECT seller_nick FROM seller_profiles WHERE auto_banned=1"
+                )
+            } if has_profiles else set()
 
         # 批内价格统计：优先用每 GB 单价（元/GB），无容量信息的商品退回裸价。
         # 原因：16G ¥150 vs 32G ¥200 裸价看似 16G 便宜，实际 16G ¥9.4/GB 比
@@ -98,6 +108,8 @@ class BlacklistDB:
         blocked: list[dict[str, Any]] = []
 
         for it in items:
+            it.pop("_blocked_reasons", None)
+            it.pop("_price_flag", None)
             # 低价标记（不屏蔽！）：显著低于同类中位价 → 可能是捡漏，也可能是引流。
             # 作为 _price_flag 附带在商品上，由调用方决定如何呈现——绝不自动屏蔽。
             # 有容量的商品比每GB单价（更准），无容量的退回裸价比。
@@ -118,6 +130,8 @@ class BlacklistDB:
                         it["_price_flag"] = f"偏低(中位价¥{median_raw:.0f}的{ratio*100:.0f}%)"
 
             reasons = _check_item(it, rules)
+            if it.get("seller_nick") in banned_sellers:
+                reasons.append("卖家已被信号规则自动屏蔽")
             if reasons:
                 it["_blocked_reasons"] = reasons
                 blocked.append(it)

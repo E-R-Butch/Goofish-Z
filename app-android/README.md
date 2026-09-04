@@ -43,3 +43,18 @@ App 只调用本机 Goofish-Z API。账号、商品、Cookie、Token、会话和
 - OkHttp + kotlinx.serialization
 - DataStore 存设置
 - Navigation 底部导航 4 Tab
+
+
+## 0.2.0 监控任务
+
+监控通过 `/api/watch/jobs` 提交，客户端轮询进度并显示限流等待、失败和取消状态。
+“刷新进度”可重新连接最近任务；取消不会重试正在进行的请求。请求显式编码默认值，
+确保全部运行时发送 `all=true`、单项运行时发送 `all=false` 和 `watch_id`。
+
+使用 JDK 17、Gradle 8.13 与 Android SDK 35 验证：
+
+```bash
+gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
+```
+
+单元测试通过 MockWebServer 检查真实 HTTP 请求体和失败任务的解析，不连接闲鱼。
