@@ -191,15 +191,19 @@ def capacity_matches(title: str, required_cap: int | None) -> bool:
 
 _GPU_MODEL_RE = re.compile(
     r"(?<!\d)(?:RTX\s*)?((?:30|40|50)[5-9]0)\s*"
-    r"(?:(D|TI(?:\s*SUPER)?|SUPER)(?![A-Z]))?(?![A-Z0-9])",
+    r"(?:(D|TI(?:\s*(?:SUPER|S))?|SUPER|S)(?![A-Z]))?(?![A-Z0-9])",
     re.IGNORECASE,
 )
 
 
 def extract_gpu_models(text: str) -> set[str]:
-    """提取 RTX 型号并保留 D / Ti / Super 后缀；4090 与 4090D 不等价。"""
+    """保留型号后缀，S 归一为 SUPER；4090 与 4090D 不等价。"""
+    def suffix(value: str) -> str:
+        normalized = re.sub(r"\s+", "", value).upper()
+        return {"S": "SUPER", "TIS": "TISUPER"}.get(normalized, normalized)
+
     return {
-        "RTX" + match.group(1) + re.sub(r"\s+", "", match.group(2) or "").upper()
+        "RTX" + match.group(1) + suffix(match.group(2) or "")
         for match in _GPU_MODEL_RE.finditer(str(text or ""))
     }
 

@@ -212,7 +212,12 @@ async def goofish_page(
 
 async def auto_scroll(page: Any, times: int = 2, pause_ms: int = 800) -> None:
     """模拟 OpenCLI 的 `page.autoScroll({times})`：滚到底 N 次触发懒加载。"""
+    await page.wait_for_function("Boolean(document.body)", timeout=15000)
     for _ in range(times):
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        # 登录跳转可能在等待结束后替换文档，不能假定 body 始终存在。
+        await page.evaluate("""() => {
+            const body = document.body;
+            if (body) window.scrollTo(0, body.scrollHeight);
+        }""")
         await page.wait_for_timeout(pause_ms)
     await page.evaluate("window.scrollTo(0, 0)")

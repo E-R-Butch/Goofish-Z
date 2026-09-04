@@ -28,10 +28,25 @@ class SearchMatchingTest(OfflineCase):
             ("4090显卡 DDR6X", {"RTX4090"}),
             ("4090-24/48G 4090d-24/48G涡轮", {"RTX4090", "RTX4090D"}),
             ("RTX4070Ti SUPER显卡", {"RTX4070TISUPER"}),
+            ("RTX4080S 32G", {"RTX4080SUPER"}),
+            ("4080 super显卡", {"RTX4080SUPER"}),
+            ("4070tis显卡", {"RTX4070TISUPER"}),
             ("合成编号140900", set()),
         ):
             with self.subTest(title=title):
                 self.assertEqual(extract_gpu_models(title), expected)
+
+    def test_super_abbreviation_matches_full_name_and_excludes_other_gpus(self):
+        fetched = {"items": [
+            fixture(item_id='synthetic-s',title='合成4080S 32G显卡'),
+            fixture(item_id='synthetic-super',title='合成RTX4080 SUPER 32GB显卡'),
+            fixture(item_id='synthetic-other',title='合成4090 32G显卡'),
+            fixture(item_id='synthetic-base',title='合成4080 32G显卡'),
+        ],"page":1,"source_count":4,"has_next":False}
+        with patch.object(self.search, '_run', AsyncMock(return_value=fetched)):
+            result = self.search.search('4080S 32G')
+        self.assertEqual({it['item_id'] for it in result['items']}, {'synthetic-s','synthetic-super'})
+        self.assertEqual(result['filtered_count'], 2)
 
     def test_capacity_model_and_confirmed_price_reason_stay_distinct(self):
         db = BlacklistDB(self.root / "watch.db")

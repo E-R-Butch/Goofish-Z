@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 
 from support import OfflineCase, fixture
-from goofish_z.core.errors import AuthRequiredError, RateLimitedError, RiskControlError
+from goofish_z.core.errors import AuthRequiredError, GoofishError, RateLimitedError, RiskControlError
 from goofish_z.core.price import normalize_price, price_value
 from goofish_z.db import WatchDB
 
@@ -54,6 +54,7 @@ class SearchResultsTest(OfflineCase):
             selector.includes('page-box-active') ? text('2') :
             selector.includes('arrow-right') ? {closest: () => ({disabled: false})} : null
         };
+        global.window = {location: {href: 'https://www.goofish.com/search?q=synthetic'}};
         extract(30).then(result => process.stdout.write(JSON.stringify(result)));
         """
         completed = subprocess.run(["node", "-e", script], input=self.search._EXTRACT_JS,
@@ -62,12 +63,13 @@ class SearchResultsTest(OfflineCase):
         self.assertEqual(extracted["items"][0]["price"], "¥2.42万")
         self.assertEqual(extracted["page"], 2)
         self.assertTrue(extracted["has_next"])
+        self.assertEqual(extracted["source_query"], "synthetic")
 
     def test_browser_result_normalizes_price_for_all_clients(self):
         page = MagicMock()
         page.goto = page.wait_for_timeout = page.wait_for_load_state = AsyncMock()
         page.evaluate = AsyncMock(return_value={"items": [fixture("¥2.42万")],
-                                               "has_next": True, "page": 1, "source_count": 30})
+                                               "source_query": "synthetic", "has_next": True, "page": 1, "source_count": 30})
         @asynccontextmanager
         async def browser():
             yield page
@@ -77,6 +79,45 @@ class SearchResultsTest(OfflineCase):
         self.assertEqual(result["items"][0]["price"], "¥24200")
         self.assertEqual(result["items"][0]["price_value"], 24200)
         self.assertEqual(result["items"][0]["price_text"], "¥2.42万")
+        self.assertEqual(result["query"], "synthetic")
+
+    def test_scroll_tolerates_body_disappearing_after_navigation_wait(self):
+        from goofish_z.core.browser import auto_scroll
+        page = MagicMock()
+        page.wait_for_function = AsyncMock()
+        page.evaluate = AsyncMock()
+        page.wait_for_timeout = AsyncMock()
+        asyncio.run(auto_scroll(page, times=1, pause_ms=0))
+        scroll = page.evaluate.await_args_list[0].args[0]
+        # The DOM can be replaced immediately after the wait succeeds.
+        script = """
+        const fs = require('node:fs');
+        const scroll = eval('(' + fs.readFileSync(0, 'utf8') + ')');
+        global.document = {body: null};
+        const calls = [];
+        global.window = {scrollTo: (...args) => calls.push(args)};
+        scroll();
+        document.body = {scrollHeight: 300};
+        scroll();
+        process.stdout.write(JSON.stringify(calls));
+        """
+        completed = subprocess.run(['node','-e',script],input=scroll,text=True,capture_output=True,check=True)
+        self.assertEqual(json.loads(completed.stdout), [[0, 300]])
+
+    def test_source_keyword_mismatch_and_missing_provenance_are_rejected(self):
+        for source in ('4090', ''):
+            with self.subTest(source=source), self.assertRaisesRegex(GoofishError, '关键词.*不一致'):
+                self.search._check_payload({'items':[fixture()], 'source_query':source}, '4080S 32G')
+
+    def test_repeated_navigation_failure_is_bounded_and_explained(self):
+        from playwright.async_api import Error as BrowserError
+        page = MagicMock()
+        page.wait_for_load_state = page.wait_for_timeout = AsyncMock()
+        page.evaluate = AsyncMock(side_effect=BrowserError('Execution context was destroyed'))
+        with patch.object(self.search, 'auto_scroll', AsyncMock()), self.assertRaisesRegex(GoofishError, '仍在跳转'):
+            asyncio.run(self.search._read_search_page(page, 30))
+        self.assertEqual(page.evaluate.await_count, 2)
+        page.goto.assert_not_called()
 
     def test_auth_redirect_retries_dom_read_once_without_another_navigation(self):
         from playwright.async_api import Error as BrowserError

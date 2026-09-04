@@ -46,9 +46,13 @@ async function screen(overrides = {}) {
     clearTimeout: id => timers.delete(id), setInterval() {},
     fetch: async (url, options) => {
       requests.push([url, options]);
-      const value = typeof responses[url] === 'function' ? responses[url]() : responses[url];
+      let value = await (typeof responses[url] === 'function' ? responses[url]() : responses[url]);
       if (value === undefined) throw new Error(`Unexpected test request: ${url}`);
       const status = value.testStatus || (value.testError ? 400 : 200);
+      if (url.startsWith('/api/search?') && status < 400) {
+        const params = new URL(url, 'http://localhost').searchParams;
+        value = {query: params.get('q'), page: Number(params.get('page')), ...value};
+      }
       return {ok: status < 400, status, headers: {get: name => value.testHeaders?.[name] ?? null}, json: async () => value};
     },
   });
@@ -98,7 +102,7 @@ test('errors render literally and release the search button', async () => {
   });
   document.getElementById('searchQ').value = 'synthetic';
   await context.doSearch();
-  assert.equal(document.getElementById('searchResults').textContent, detail);
+  assert.ok(document.getElementById('searchStatus').textContent.includes(detail));
   assert.equal(document.getElementById('searchButton').disabled, false);
 });
 
@@ -141,7 +145,7 @@ test('a second busy response stops automatic retries and releases the form', asy
   await running;
   await advance(5000);
   assert.equal(requests.filter(([url]) => url === path).length, 2);
-  assert.match(document.getElementById('searchResults').textContent, /仍需等待 1 秒/);
+  assert.match(document.getElementById('searchStatus').textContent, /仍需等待 1 秒/);
   assert.equal(document.getElementById('searchButton').disabled, false);
 });
 
@@ -169,7 +173,7 @@ test('authentication and circuit failures are not retried', async () => {
     await context.doSearch();
     await advance(5000);
     assert.equal(requests.filter(([url]) => url === path).length, 1);
-    assert.equal(document.getElementById('searchResults').textContent, 'synthetic error');
+    assert.match(document.getElementById('searchStatus').textContent, /synthetic error/);
   }
 });
 
@@ -275,7 +279,9 @@ test('failed next page preserves current results and the current page number', a
   await context.changeSearchPage(2);
   assert.match(document.getElementById('searchPageLabel').textContent, /第 1 页/);
   assert.match(document.getElementById('searchResults').textContent, /original result/);
-  assert.match(document.getElementById('searchResults').textContent, /synthetic login required/);
+  assert.match(document.getElementById('searchStatus').textContent, /synthetic login required/);
+  context.resetSearchFilters();
+  assert.match(document.getElementById('searchStatus').textContent, /synthetic login required/);
   assert.equal(document.getElementById('searchNextButton').disabled, false);
 });
 
@@ -338,4 +344,61 @@ test('trash explains all matching local conditions and updates when filters are 
   assert.equal(trash.disabled, true);
   assert.ok(!box.textContent.includes('已过滤内容'));
   assert.equal(requests.length, count);
+});
+
+test('a failed new keyword clears old results and keeps the error through filters until retry succeeds', async () => {
+  let calls = 0;
+  const {context, document, requests} = await screen({
+    '/api/search?q=4090&limit=30&page=1': {items: [{title:'synthetic old GPU'}],has_next:true},
+    '/api/search?q=4080S%2032G&limit=30&page=1': () => ++calls === 1 ?
+      {testStatus:500,detail:'synthetic page navigation failed'} : {items:[{title:'synthetic new GPU'}],has_next:true},
+  });
+  document.getElementById('searchQ').value = '4090';
+  await context.doSearch();
+  document.getElementById('searchQ').value = '4080S 32G';
+  const pending = context.doSearch();
+  assert.ok(!document.getElementById('searchResults').textContent.includes('synthetic old GPU'));
+  await pending;
+  assert.equal(document.getElementById('searchNextButton').disabled, true);
+  assert.match(document.getElementById('searchStatus').textContent, /4080S 32G.*搜索失败.*navigation failed/);
+  context.resetSearchFilters();
+  context.toggleFilteredResults();
+  await context.changeSearchPage(2);
+  assert.ok(!document.getElementById('searchResults').textContent.includes('synthetic old GPU'));
+  assert.match(document.getElementById('searchStatus').textContent, /navigation failed/);
+  assert.ok(!requests.some(([url]) => url.includes('page=2')));
+  await context.doSearch();
+  assert.match(document.getElementById('searchResults').textContent, /4080S 32G.*synthetic new GPU/);
+  assert.equal(document.getElementById('searchStatus').textContent, '');
+});
+
+test('consecutive searches use their own page cache and fresh retries request again', async () => {
+  const responses = {};
+  for (const query of ['4090', '4080S']) for (const page of [1, 2]) {
+    responses[`/api/search?q=${query}&limit=30&page=${page}`] = {items:[{title:`synthetic ${query} page ${page}`}],has_next:true};
+  }
+  const {context, document, requests} = await screen(responses);
+  for (const query of ['4090', '4080S', '4090']) {
+    document.getElementById('searchQ').value = query;
+    await context.doSearch();
+    await context.changeSearchPage(2);
+    assert.match(document.getElementById('searchResults').textContent, new RegExp(`synthetic ${query} page 2`));
+    const count = requests.length;
+    await context.changeSearchPage(1);
+    assert.equal(requests.length, count);
+  }
+  assert.equal(requests.filter(([url]) => url === '/api/search?q=4090&limit=30&page=1').length, 2);
+});
+
+test('a response for another keyword or page is rejected instead of relabelling its items', async () => {
+  for (const metadata of [{query:'4090'}, {page:2}, {query:null}]) {
+    const {context, document} = await screen({
+      '/api/search?q=4080S&limit=30&page=1': {...metadata,items:[{title:'synthetic stale result'}]},
+    });
+    document.getElementById('searchQ').value = '4080S';
+    await context.doSearch();
+    assert.match(document.getElementById('searchStatus').textContent, /关键词或页码不一致/);
+    assert.ok(!document.getElementById('searchResults').textContent.includes('synthetic stale result'));
+    assert.equal(document.getElementById('searchNextButton').disabled, true);
+  }
 });

@@ -117,6 +117,7 @@ _EXTRACT_JS = r"""
   const next = document.querySelector('[class*="search-pagination-arrow-right"]')?.closest('button');
   return {
     requiresAuth, blocked, empty, items, bodyPreview: bodyText.slice(0, 500),
+    source_query: new URL(window.location.href).searchParams.get('q') || '',
     page: Number(activePage?.textContent) || 1,
     has_next: Boolean(next && !next.disabled),
     source_count: document.querySelectorAll(sel.card).length,
@@ -173,22 +174,28 @@ async def _go_to_page(page: Any, number: int) -> None:
 
 
 async def _run(query: str, limit: int, page_number: int = 1) -> dict[str, Any]:
+    from playwright.async_api import TimeoutError as BrowserTimeout
+
     url = _build_search_url(query)
     async with goofish_page() as page:
-        await page.goto(url, wait_until="domcontentloaded")
+        try:
+            await page.goto(url, wait_until="domcontentloaded")
+        except BrowserTimeout as error:
+            raise GoofishError("闲鱼搜索页打开超时，本次搜索未完成，请重试") from error
         payload = await _read_search_page(page, limit)
-        _check_payload(payload)
+        _check_payload(payload, query)
         if page_number > 1:
             if not payload.get("has_next"):
                 raise GoofishError("没有更多搜索结果")
             await _go_to_page(page, page_number)
             payload = await _read_search_page(page, limit)
-            _check_payload(payload)
+            _check_payload(payload, query)
             if payload.get("page") != page_number:
                 raise GoofishError("闲鱼返回的页码不匹配，请重新搜索")
 
     items = payload.get("items") or []
     return {
+        "query": query,
         "items": [
             {**it, **normalize_price(it.get("price")),
              "rank": i + 1, "item_id": _item_id_from_url(it.get("url", ""))}
@@ -202,7 +209,7 @@ async def _run(query: str, limit: int, page_number: int = 1) -> dict[str, Any]:
 
 async def _read_search_page(page: Any, limit: int) -> dict[str, Any]:
     """An authentication redirect can replace the DOM during the first read."""
-    from playwright.async_api import Error as BrowserError
+    from playwright.async_api import Error as BrowserError, TimeoutError as BrowserTimeout
 
     for attempt in range(2):
         try:
@@ -210,14 +217,18 @@ async def _read_search_page(page: Any, limit: int) -> dict[str, Any]:
             await page.wait_for_timeout(2000)
             await auto_scroll(page, times=2)
             return await page.evaluate(_EXTRACT_JS, limit)
+        except BrowserTimeout as error:
+            raise GoofishError("闲鱼搜索页加载超时，本次搜索未完成，请重试") from error
         except BrowserError as error:
-            if attempt or "Execution context was destroyed" not in str(error):
+            if "Execution context was destroyed" not in str(error):
                 raise
+            if attempt:
+                raise GoofishError("闲鱼搜索页仍在跳转，本次搜索未完成，请重试") from error
             # Read the new document once; do not re-submit a search or dismiss login.
     raise GoofishError("搜索页跳转未完成")
 
 
-def _check_payload(payload: Any) -> None:
+def _check_payload(payload: Any, query: str | None = None) -> None:
     if not isinstance(payload, dict):
         raise GoofishError("搜索页返回结构非预期")
 
@@ -240,6 +251,9 @@ def _check_payload(payload: Any) -> None:
             f"未在搜索页上解析到任何卡片，可能 DOM 结构已变。"
             f"页面文案预览：{preview!r}"
         )
+
+    if query is not None and str(payload.get("source_query", "")).strip() != query.strip():
+        raise GoofishError("闲鱼页面关键词与本次搜索不一致，已丢弃结果，请重新搜索")
 
 
 def _filtered_item(item: dict[str, Any], reasons: list[str]) -> dict[str, Any]:

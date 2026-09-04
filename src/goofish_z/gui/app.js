@@ -7,6 +7,7 @@ let searchState = null;
 let searchBusy = false;
 let filteredOpen = false;
 const searchCache = new Map();
+const searchCacheKey = (query, page) => JSON.stringify([query, page]);
 
 function node(tag, text, className) {
   const element = document.createElement(tag);
@@ -237,9 +238,11 @@ async function doSearch() {
 
 async function changeSearchPage(page) {
   if (!searchState || searchBusy || page < 1) return;
-  if (searchCache.has(page)) {
+  const key = searchCacheKey(searchState.query, page);
+  if (searchCache.has(key)) {
     filteredOpen = false;
-    searchState = {...searchState, page, result: searchCache.get(page)};
+    $('searchStatus').replaceChildren();
+    searchState = {...searchState, page, result: searchCache.get(key)};
     renderSearch();
     return;
   }
@@ -247,14 +250,23 @@ async function changeSearchPage(page) {
 }
 
 async function fetchSearchPage(query, page, fresh) {
+  // 新搜索从提交时起就与旧关键词隔离，包括失败和限流等待期间。
+  if (fresh) {
+    searchState = null;
+    searchCache.clear();
+    filteredOpen = false;
+  }
+  $('searchStatus').replaceChildren();
   searchBusy = true;
   updateSearchControls();
   $('searchButton').textContent = '搜索中…';
   message($('searchResults'), `正在检索“${query}”第 ${page} 页…翻页也会等待搜索间隔。`);
   try {
     const result = await searchWithCooldown(`/api/search?q=${encodeURIComponent(query)}&limit=30&page=${page}`, query);
-    if (fresh) searchCache.clear();
-    searchCache.set(page, result);
+    if (result.query !== query || result.page !== page) {
+      throw new Error('搜索响应的关键词或页码不一致，已丢弃结果，请重新搜索。');
+    }
+    searchCache.set(searchCacheKey(query, page), result);
     filteredOpen = false;
     searchState = {query, page, result};
     searchBusy = false;
@@ -262,10 +274,10 @@ async function fetchSearchPage(query, page, fresh) {
   } catch (e) {
     const busy = e.status === 429 && e.retryAfter;
     searchBusy = false;
-    renderSearch();
     const text = busy ? `搜索间隔仍需等待 ${e.retryAfter} 秒，请稍后重试。` : e.message;
-    if (searchState) $('searchResults').append(node('div', `第 ${page} 页加载失败：${text}`, 'alert'));
-    else message($('searchResults'), text, !busy);
+    message($('searchStatus'), `“${query}”第 ${page} 页搜索失败：${text}`, true);
+    if (searchState) renderSearch();
+    else message($('searchResults'), '本次搜索未完成，尚无可展示的结果。请点击搜索重试。');
   } finally {
     searchBusy = false;
     $('searchButton').textContent = '搜索';
