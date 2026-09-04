@@ -89,9 +89,10 @@ def list_api_commands() -> dict[str, Any]:
 def api_search(
     q: str = Query(..., description="搜索关键词"),
     limit: int = Query(20, ge=1, le=50),
+    page: int = Query(1, ge=1, le=50),
 ) -> JSONResponse:
     """搜索闲鱼商品。"""
-    result = _call_command("search.items", {"query": q, "limit": limit})
+    result = _call_command("search.items", {"query": q, "limit": limit, "page": page})
     return JSONResponse(result)
 
 

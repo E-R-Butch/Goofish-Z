@@ -145,14 +145,8 @@ class BlacklistDB:
 
 
 def _to_float(v: Any) -> float | None:
-    """'¥180' → 180.0；'包邮' → None。"""
-    if v is None:
-        return None
-    s_val = str(v).replace("¥", "").replace("￥", "").strip()
-    try:
-        return round(float(s_val), 2)
-    except ValueError:
-        return None
+    from goofish_z.core.price import price_value
+    return price_value(v)
 
 
 _CAPACITY_RE = re.compile(r"(\d{1,3})\s*(?:GB|G)\b", re.IGNORECASE)

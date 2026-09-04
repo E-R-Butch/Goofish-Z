@@ -13,14 +13,15 @@
   .row { display:flex; gap:12px; flex-wrap:wrap; }
   .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px; flex:1; min-width:min(100%,320px); }
   .card h3 { font-size:14px; color:var(--dim); margin-bottom:12px; font-weight:500; }
-  input, button { background:#232733; border:1px solid var(--border); color:var(--text); border-radius:6px; padding:8px 12px; font-size:13px; }
+  input, button, select { background:#232733; border:1px solid var(--border); color:var(--text); border-radius:6px; padding:8px 12px; font-size:13px; }
   input:focus { outline:none; border-color:var(--accent); }
   button { cursor:pointer; }
   button.primary { background:var(--accent); border-color:var(--accent); color:#0b0e12; font-weight:600; }
   button:hover { filter:brightness(1.1); }
   .watch-item { display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border); font-size:13px; }
   .watch-item:last-child { border-bottom:none; }
-  .price { color:var(--good); font-weight:600; }
+  .price { color:var(--good); font-weight:600; white-space:nowrap; min-width:105px; }
+  .price-source { color:var(--dim); font-size:10px; font-weight:400; margin-top:4px; }
   .price.high { color:var(--warn); }
   .tag { background:#232733; border-radius:4px; padding:2px 8px; font-size:11px; color:var(--dim); }
   .alert { border-left:3px solid var(--warn); padding:8px 12px; margin:6px 0; background:#23273333; font-size:13px; }
@@ -34,6 +35,15 @@
   input { min-width:0; }
   td, .watch-item { overflow-wrap:anywhere; }
   a { color:var(--text); text-decoration:none; }
+  .filters { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-bottom:10px; }
+  .filters label { display:flex; flex-direction:column; gap:4px; color:var(--dim); font-size:11px; min-width:0; }
+  .filters input, .filters select { width:100%; }
+  .filter-heading, .pagination { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:10px 0; }
+  .filter-heading .sub { margin:0; flex:1; }
+  .pagination .sub { margin:0; }
+  .search-table { max-height:520px; overflow:auto; }
+  .search-table th { position:sticky; top:0; background:var(--panel); }
+  @media(max-width:600px) { body { padding:12px; } .filters { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 </style>
 </head>
 <body>
@@ -47,8 +57,29 @@
         <input id="searchQ" placeholder="关键词，如 DDR3 RECC 32G" style="flex:1">
         <button class="primary" id="searchButton">搜索</button>
       </div>
-      <div id="searchResults" style="max-height:380px; overflow-y:auto;">
+      <div class="filter-heading">
+        <span class="sub">筛选当前页 · 即时生效</span>
+        <button id="resetFiltersButton">清空筛选</button>
+      </div>
+      <div class="filters">
+        <label>最低价（元）<input id="searchMin" type="number" min="0" step="0.01" placeholder="不限"></label>
+        <label>最高价（元）<input id="searchMax" type="number" min="0" step="0.01" placeholder="不限"></label>
+        <label>地区<input id="searchLocation" placeholder="如 上海"></label>
+        <label>标题包含（全部匹配）<input id="searchInclude" placeholder="多个词用空格分隔"></label>
+        <label>标题排除（任一匹配）<input id="searchExclude" placeholder="如 回收 配件"></label>
+        <label>排序<select id="searchSort">
+          <option value="default">闲鱼默认顺序</option>
+          <option value="price_asc">价格从低到高</option>
+          <option value="price_desc">价格从高到低</option>
+        </select></label>
+      </div>
+      <div id="searchResults" class="search-table" aria-live="polite">
         <div class="sub">输入关键词开始搜索</div>
+      </div>
+      <div class="pagination">
+        <button id="searchPrevButton" disabled>上一页</button>
+        <span id="searchPageLabel" class="sub">每页最多 30 条</span>
+        <button id="searchNextButton" disabled>下一页</button>
       </div>
     </div>
 

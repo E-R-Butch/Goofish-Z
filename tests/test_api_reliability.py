@@ -25,7 +25,7 @@ class ApiReliabilityTest(OfflineCase):
 
     def test_actual_http_route_can_run_async_browser_command(self):
         async def fetched(*args):
-            return [fixture()]
+            return {"items": [fixture()], "page": 1, "has_next": False, "source_count": 1}
         with patch.object(self.search, "_run", side_effect=fetched):
             response = self.client.post("/api/watch/run", json={"all": True})
         self.assertEqual(response.status_code, 200)

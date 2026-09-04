@@ -23,7 +23,7 @@ class WatchTest(OfflineCase):
         starts = []
         async def fetch(*args):
             starts.append(clock[0])
-            return [fixture()]
+            return {"items": [fixture()], "page": 1, "has_next": False, "source_count": 1}
         def sleep(delay):
             clock[0] += delay
         with patch.object(self.limiter.time, "time", side_effect=lambda: clock[0]), \

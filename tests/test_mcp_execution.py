@@ -15,7 +15,7 @@ from goofish_z.mcp_server import create_server, make_handler
 class McpTest(OfflineCase):
     def test_sync_command_can_run_its_own_async_browser_loop(self):
         async def fetched(*args):
-            return [fixture()]
+            return {"items": [fixture()], "page": 1, "has_next": False, "source_count": 1}
         with patch.object(self.search, "_run", side_effect=fetched):
             result = asyncio.run(make_handler(self.search.search)(query="synthetic"))
         self.assertEqual(result["count"],1)

@@ -18,6 +18,8 @@ APK 工作链迁移与进一步升级暂缓。
 - MCP 升级至 2.1.1+，验证新旧协议连接、结构化结果和普通输出隔离。
 - 签名模块的 UTF-8 设置限定在 JavaScript 桥接内，避免影响 MCP 导入和其他子进程。
 - 搜索遇到本地限流时显示剩余秒数，等待后自动重试一次；状态栏显示 API 版本。
+- 工作台显示每页最多 30 条，支持翻页、当前页价格/标题/地区筛选和价格排序。
+- 修复搜索价格漏读“万”单位；统一换算为元，保留页面原文，供 PC、Agent 和监控使用。
 
 ## 安装和启动
 
@@ -70,6 +72,7 @@ Web 面板为 `http://127.0.0.1:8787`。MCP 入口是 `.venv/bin/goofish-z-mcp`�
 
 ```bash
 .venv/bin/goofish-z search items "示例商品" --limit 5
+.venv/bin/goofish-z search items "示例商品" --limit 30 --page 2
 .venv/bin/goofish-z item mine --status online --limit 50
 .venv/bin/goofish-z item mine --status all --limit 200 --format json
 .venv/bin/goofish-z watch add "示例商品" --max-price 100
@@ -95,6 +98,18 @@ MCP 工具名为 `watch.start`、`watch.jobs`、`watch.job`、`watch.cancel`。�
 带 `Retry-After` 的 429 响应后，会显示倒计时并自动重试一次；等待中不会重复提交。
 如果仍被限流，页面会提示剩余时间并恢复操作。登录失效或风控错误不会自动重试。
 
+工作台搜索每页最多展示 30 条，可用“上一页 / 下一页”浏览更多结果。翻页也遵守
+共享搜索间隔，首次读取另一页可能需要等待；返回本次已看过的页面使用内存缓存。
+自动过滤和屏蔽可能使可见数量少于 30，页面会显示数量；筛选后为空也仍能翻页。
+闲鱼要求重新登录时会提示更新登录态，翻页失败会保留原页，不把旧结果当作新页。
+
+价格上下限（元）、地区、标题包含/排除和价格排序只作用于**当前页已获取的结果**，
+修改条件即时生效，不再次访问闲鱼；不代表对全站结果的筛选或排序。
+搜索返回的 `price` 统一为元字符串，`price_value` 为元数值，`price_text` 保留来源原文。
+例如 `¥2.42万` 返回 `price="¥24200"`、`price_value=24200`；界面显示 `¥24,200`
+及原文。闲鱼缩写标价本身可能经过舍入，精确标价仍以商品详情页为准。历史与告警
+使用相同单位换算；旧记录中已丢失的单位不会凭猜测回填。
+
 `max_price` 是低价告警线（价格小于或等于时告警），`min_price` 是高价告警线
 （价格大于或等于时告警）；两者是独立触发条件。相同价格持续满足相同条件不会重复
 告警，价格改变或观察到离开条件后再次满足才产生新事件。搜索中未出现某商品不能
@@ -110,7 +125,7 @@ MCP 工具名为 `watch.start`、`watch.jobs`、`watch.job`、`watch.cancel`。�
 | --- | --- |
 | 服务存活 | `GET /health` |
 | 本地诊断 | `GET /api/diagnostics` |
-| 搜索 | `GET /api/search?q=...&limit=20` |
+| 搜索 | `GET /api/search?q=...&limit=30&page=1` |
 | 本人商品 | `GET /api/item/mine?status=online&limit=50` |
 | 商品详情 | `GET /api/item/get?item_id=...` |
 | 消息会话 | `GET /api/message/chats` |
@@ -125,6 +140,10 @@ MCP 工具名为 `watch.start`、`watch.jobs`、`watch.job`、`watch.cancel`。�
 同步运行成功返回 200，部分失败返回 207，全部失败返回 502；结果同时包含
 `status`、`succeeded`、`failed`、`skipped` 和每项错误。CLI 对失败或部分失败返回
 非零退出码；MCP 的全部失败以工具错误返回。限流响应使用 429 和 `Retry-After`。
+
+搜索 `page` 范围为 1–50，默认 1；`limit` 是当前页获取上限（1–50，默认 20），
+实际数量取决于闲鱼当前页和过滤规则。返回 `page`、`has_next`、`source_count`、
+`filtered_count` 和 `blocked_count`；是否还有下一页以来源分页控件为准。
 
 每个 API 进程只接受一个活动后台任务；重复提交返回 409。限流等待可立即取消，
 正在进行的浏览器请求会在结束后检查取消状态。任务进度保存在内存，服务重启后不
@@ -149,7 +168,7 @@ Cookie 内容，也不自动刷新登录态；其登录结果只是最近一次 
 
 ## 验证
 
-0.2.0 已在全新 Python 3.14 环境通过 **56 项 Python 测试、9 项网页测试**，依赖检查
+0.2.0 已在全新 Python 3.14 环境通过 **66 项 Python 测试、14 项网页测试**，依赖检查
 无冲突。CI 配置覆盖 Python 3.11 和 3.14。可在本地复现离线测试：
 
 ```bash
@@ -161,6 +180,8 @@ node --test tests/gui.test.js
 
 测试使用临时目录与合成数据，覆盖 API/MCP 调用、限流竞争、熔断、取消、告警去重、
 旧数据库迁移、网页文本渲染，以及 MCP 新旧协议和命令/子进程输出隔离。
+搜索回归覆盖单位换算、监控阈值、分页参数、翻页时的登录/风控检查、当前页筛选、
+数值排序和翻页缓存；另以隔离 Chrome 的合成页面验证实际 DOM 提取及桌面/手机布局。
 Android 请求契约测试见 `app-android/`。
 离线测试不等同于真实闲鱼登录、搜索或交易验证；平台 DOM 与登录流程变化仍需实测。
 
