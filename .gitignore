@@ -2,6 +2,12 @@
 __pycache__/
 *.pyc
 
+# Android local build and SDK configuration.
+/app-android/.gradle/
+/app-android/.kotlin/
+/app-android/**/build/
+/app-android/local.properties
+
 # Runtime and business data belong on the local machine, never in this
 # public source repository.  The leading slash is intentional: Android's
 # `app/.../data/` package contains source code and must remain trackable.

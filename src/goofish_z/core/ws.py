@@ -61,6 +61,8 @@ def _handshake_headers(session: Session) -> dict[str, str]:
 @asynccontextmanager
 async def connect(session: Session) -> AsyncIterator[ClientConnection]:
     """建立 WebSocket 连接（未 reg）。外层自己 reg + heartbeat。"""
+    from goofish_z.core.guard import check as guard_check
+    guard_check()
     async with websockets.connect(
         WS_URL,
         additional_headers=_handshake_headers(session),

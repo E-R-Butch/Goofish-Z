@@ -4,7 +4,7 @@
 1. **用系统 Chrome**（`channel="chrome"`），不用 playwright 自带的 bundled chromium——
    bundled chromium 的 UA / CDP 指纹太"裸"，是风控高危目标；系统 Chrome 是真实用户
    每天在用的可执行，配上真实 cookies 后基本等同正常浏览。
-2. **每次调用独立 profile**（`~/.goofish-cli/profiles/chrome-<tmp>/`）：Chrome 一个
+2. **每次调用独立 profile**（`~/.goofish-z/profiles/chrome-<tmp>/`）：Chrome 一个
    `user_data_dir` 同时只能被一个进程打开（`SingletonLock`），固定路径会让并发调用
    （MCP 同时跑多个 tool / 用户手动并发）直接 ProfileInUse 起不来。所以每次 tmp 一个
    profile，退出清理——代价是首次启动多几百 ms，收益是天然支持并发。登录态不需要靠
@@ -31,8 +31,9 @@ from typing import Any
 from loguru import logger
 
 from goofish_z.core.session import Session
+from goofish_z.core.paths import runtime_data_path
 
-PROFILES_PARENT = Path.home() / ".goofish-cli" / "profiles"
+PROFILES_PARENT = runtime_data_path("profiles")
 
 # 需要种的域。goofish.com 下的 cookie 只在 .goofish.com 生效，
 # 但淘系签名链路依赖的 _m_h5_tk / x5sec / sgcookie 历史上会跨 .taobao.com。
@@ -130,18 +131,20 @@ async def goofish_page(
             await page.goto("https://www.goofish.com/search?q=foo")
             ...
     """
+    from goofish_z.core.guard import check as guard_check
+    guard_check()
     from playwright.async_api import async_playwright
 
     if headless is None:
         # 默认 headful。CI 用户显式 GOOFISH_HEADLESS=1 切回（可能触发风控）。
         headless = os.environ.get("GOOFISH_HEADLESS") == "1"
 
-    PROFILES_PARENT.mkdir(parents=True, exist_ok=True)
-    # 每次调用独立 profile 目录，避开 Chrome SingletonLock 并发冲突
-    profile_dir = Path(tempfile.mkdtemp(prefix="chrome-", dir=str(PROFILES_PARENT)))
     if cookies is None:
         cookies = _load_cookies_from_session()
     pw_cookies = _cookies_to_playwright(cookies)
+    PROFILES_PARENT.mkdir(parents=True, exist_ok=True)
+    # Resolve authentication before creating a profile so failed login leaves no directory.
+    profile_dir = Path(tempfile.mkdtemp(prefix="chrome-", dir=str(PROFILES_PARENT)))
 
     try:
         async with async_playwright() as pw:
@@ -217,7 +220,7 @@ async def goofish_page(
             finally:
                 await context.close()
     finally:
-        # 清理 tmp profile。忽略错误（进程被 kill 时残留目录由用户手动清 ~/.goofish-cli/profiles/）
+        # 清理 tmp profile。忽略错误（进程被 kill 时残留目录由用户手动清 ~/.goofish-z/profiles/）
         shutil.rmtree(profile_dir, ignore_errors=True)
 
 

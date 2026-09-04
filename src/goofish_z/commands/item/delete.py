@@ -16,7 +16,7 @@ from goofish_z.core.mtop import call
 )
 def delete(item_id: str) -> dict[str, object]:
     session = Session.load()
-    with acquire("item.write"), watch():
+    with acquire("write"), watch():
         raw = call(
             session,
             api="com.taobao.idle.item.delete",

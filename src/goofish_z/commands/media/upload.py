@@ -17,6 +17,9 @@ UPLOAD_URL = "https://stream-upload.goofish.com/api/upload.api"
     write=True,
 )
 def upload(path: str) -> dict[str, object]:
+    from goofish_z.core.guard import check as guard_check
+
+    guard_check()
     session = Session.load()
     abs_path = os.path.expanduser(path)
     if not os.path.exists(abs_path):

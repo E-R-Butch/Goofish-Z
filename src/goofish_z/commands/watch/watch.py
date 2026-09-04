@@ -1,7 +1,6 @@
 """watch — 价格监控（生态空白点）。定时搜索 + SQLite 落盘 + 告警。"""
 from __future__ import annotations
 
-import sys
 import time
 from typing import Any
 
@@ -82,98 +81,118 @@ def watch_history(watch_id: int, limit: int = 50) -> dict[str, Any]:
 )
 def watch_run(watch_id: int | None = None, all: bool = False, limit: int = 20,
                   enrich_sellers: bool = False) -> dict[str, Any]:
-    """执行一次监控轮询。
+    """执行监控，限流时等待；HTTP 后台任务复用相同实现。"""
+    return run_watches(watch_id=watch_id, all=all, limit=limit, enrich_sellers=enrich_sellers)
 
-    依赖 search 命令做实际抓取；这里负责调度 + 落盘 + 告警判定。
-    """
+
+def run_watches(watch_id=None, all=False, limit=20, enrich_sellers=False, *, progress=None, cancel=None):
     from goofish_z.commands.search.search import search as search_cmd
-    from goofish_z.db import _to_float
+    from goofish_z.blacklist import BlacklistDB
+    from goofish_z.signals import SellerSignalDB
+    from goofish_z.core.errors import AuthRequiredError, NotFoundError, RateLimitedError, RiskControlError
+    from goofish_z.core.guard import check as guard_check
 
+    if bool(all) == (watch_id is not None):
+        raise ValueError("需要且只能指定 watch_id 或 --all 其中一个")
+    if not 1 <= limit <= 50:
+        raise ValueError("limit 必须在 1 到 50 之间")
     db = _db()
     if all:
         targets = [w for w in db.list_watches() if w["enabled"]]
-    elif watch_id is not None:
-        w = db.get_watch(watch_id)
-        targets = [w] if w else []
     else:
-        raise ValueError("需要 watch_id 或 --all")
-
+        target = db.get_watch(watch_id)
+        if not target:
+            raise NotFoundError("监控项不存在")
+        targets = [target]
     results = []
-    from goofish_z.blacklist import BlacklistDB
-    from goofish_z.core.guard import check as guard_check
-
     bdb = BlacklistDB(DEFAULT_DB)
+    sdb = SellerSignalDB(DEFAULT_DB)
+    stopped = None
+
+    def report(phase, **fields):
+        if progress:
+            progress({"phase": phase, "completed": len(results), "total": len(targets), **fields})
+
+    def cancelled():
+        return cancel is not None and cancel.is_set()
+
+    report("running")
     for w in targets:
-        # 熔断检查：一旦触发风控熔断，停止后续所有监控项（不硬闯）
-        try:
-            guard_check()
-        except Exception as e:
-            results.append({"watch_id": w["id"], "keyword": w["keyword"],
-                            "error": f"风控熔断，停止本轮: {str(e)[:80]}"})
+        if cancelled():
+            stopped = "cancelled"
             break
-
+        report("searching", keyword=w["keyword"], watch_id=w["id"])
         try:
-            items = search_cmd(str(w["keyword"]), limit=limit).get("items", [])
-        except Exception as e:
-            results.append({"watch_id": w["id"], "keyword": w["keyword"], "error": str(e)})
-            continue
+            while True:
+                guard_check()
+                if cancelled():
+                    stopped = "cancelled"
+                    break
+                try:
+                    items = search_cmd(str(w["keyword"]), limit=limit, filter_blacklist=False).get("items", [])
+                    break
+                except RateLimitedError as exc:
+                    delay = max(0.1, exc.retry_after or 0.1) + 0.05
+                    report("waiting", keyword=w["keyword"], retry_after=delay)
+                    if cancel is not None:
+                        cancel.wait(delay)
+                    else:
+                        time.sleep(delay)
+            if stopped or cancelled():
+                stopped = "cancelled"
+                break
+            if enrich_sellers:
+                items = _enrich_seller_nicks(items, w)
+            if cancelled():
+                stopped = "cancelled"
+                break
+            # Update signals before filtering so a newly banned seller cannot alert this poll.
+            auto_banned = _apply_signal_engine(sdb, items)
+            passed, blocked = bdb.filter_items(items)
+            alerts = db.record_poll(w["id"], passed)
+            bargains = [
+                {"title": it.get("title", "")[:50], "price": it.get("price"), "flag": it["_price_flag"]}
+                for it in passed if it.get("_price_flag")
+            ]
+            results.append({
+                "watch_id": w["id"], "keyword": w["keyword"], "status": "succeeded",
+                "captured": len(passed), "blocked_count": len(blocked), "auto_banned": auto_banned,
+                "bargain_count": len(bargains), "bargains": bargains[:10], "alerts": alerts,
+                "blocked": [{"title": it.get("title", "")[:50], "price": it.get("price"),
+                             "reasons": it.get("_blocked_reasons", [])} for it in blocked[:10]],
+            })
+        except Exception as exc:
+            results.append({"watch_id": w["id"], "keyword": w["keyword"], "status": "failed", "error": str(exc)})
+            if isinstance(exc, (RiskControlError, AuthRequiredError)):
+                stopped = "failed"
+                break
+        report("running")
+    if stopped:
+        for w in targets[len(results):]:
+            results.append({"watch_id": w["id"], "keyword": w["keyword"], "status": "skipped",
+                            "error": "已取消" if stopped == "cancelled" else "登录或风控异常，本轮已停止"})
+    succeeded = sum(r["status"] == "succeeded" for r in results)
+    failed = sum(r["status"] == "failed" for r in results)
+    skipped = sum(r["status"] == "skipped" for r in results)
+    status = "cancelled" if stopped == "cancelled" else (
+        "partial" if succeeded and (failed or skipped) else "failed" if failed or skipped else "succeeded"
+    )
+    report(status)
+    return {"status": status, "results": results, "succeeded": succeeded, "failed": failed,
+            "skipped": skipped, "ran_at": time.strftime("%Y-%m-%d %H:%M:%S")}
 
-        # 层级1优先：默认只用搜索列表字段（价格/地区/badge/标题/降价）过滤。
-        # 卖家昵称补查（层级2/3，有风控代价）仅当显式 --enrich-sellers 才执行。
-        if enrich_sellers:
-            items = _enrich_seller_nicks(items, w)
 
-        # 黑名单过滤：屏蔽劣质商家，只对通过的商品落盘+告警
-        passed, blocked = bdb.filter_items(items)
-        db.record_items(w["id"], passed)
-        db.touch_check(w["id"])
+@command(namespace="watch", name="alerts", description="读取实际告警记录", columns=["id", "title", "price", "reason", "read_at"])
+def watch_alerts(limit: int = 50, unread_only: bool = False) -> dict[str, Any]:
+    return {"alerts": _db().recent_alerts(limit=max(1, min(limit, 200)), unread_only=unread_only)}
 
-        # 自动黑名单信号引擎：给商品打信号标签，按卖家聚合，达阈值自动拉黑
-        from goofish_z.signals import SellerSignalDB
 
-        sdb = SellerSignalDB(DEFAULT_DB)
-        auto_banned = _apply_signal_engine(sdb, items)
-
-        # 告警判定（只针对通过黑名单的商品）
-        alerts = []
-        for it in passed:
-            price = _to_float(it.get("price"))
-            if price is None:
-                continue
-            it["_price_num"] = price
-            reasons = []
-            if w.get("max_price") is not None and price <= w["max_price"]:
-                reasons.append(f"低于¥{w['max_price']}")
-            if w.get("min_price") is not None and price >= w["min_price"]:
-                reasons.append(f"高于¥{w['min_price']}")
-            if reasons:
-                reason = "+".join(reasons)
-                db.record_alert(w["id"], it, reason)
-                alerts.append({"title": it.get("title", "")[:60], "price": price, "reason": reason})
-
-        # 低价捡漏候选：通过黑名单且被标记低价的商品（不屏蔽，重点提示）
-        bargains = [
-            {"title": it.get("title", "")[:50], "price": it.get("price"),
-             "flag": it.get("_price_flag", "")}
-            for it in passed if it.get("_price_flag")
-        ]
-
-        results.append({
-            "watch_id": w["id"],
-            "keyword": w["keyword"],
-            "captured": len(passed),
-            "blocked_count": len(blocked),
-            "auto_banned": auto_banned,
-            "bargain_count": len(bargains),
-            "bargains": bargains[:10],
-            "blocked": [
-                {"title": b.get("title", "")[:50], "price": b.get("price"),
-                 "reasons": b.get("_blocked_reasons", [])}
-                for b in blocked[:10]
-            ],
-            "alerts": alerts,
-        })
-    return {"results": results, "ran_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+@command(namespace="watch", name="read-alert", description="将告警标为已读", columns=["alert_id", "read"])
+def watch_read_alert(alert_id: int) -> dict[str, Any]:
+    from goofish_z.core.errors import NotFoundError
+    if not _db().mark_alert_read(alert_id):
+        raise NotFoundError("告警不存在")
+    return {"alert_id": alert_id, "read": True}
 
 
 def _enrich_seller_nicks(items: list[dict[str, Any]], watch: dict[str, Any]) -> list[dict[str, Any]]:
@@ -184,7 +203,7 @@ def _enrich_seller_nicks(items: list[dict[str, Any]], watch: dict[str, Any]) -> 
     """
     from goofish_z.blacklist import BlacklistDB
     from goofish_z.commands.item.view import view as item_view
-    from goofish_z.core.errors import GoofishError
+    from goofish_z.core.errors import AuthRequiredError, GoofishError, RiskControlError
 
     bdb = BlacklistDB(DEFAULT_DB)
     has_seller_rule = any(
@@ -204,8 +223,10 @@ def _enrich_seller_nicks(items: list[dict[str, Any]], watch: dict[str, Any]) -> 
                 nick = _fetch_seller_nick_via_page(item_id)
                 if nick:
                     it["seller_nick"] = nick
+            except (RiskControlError, AuthRequiredError):
+                raise
             except GoofishError as e:
-                # 风控/过期：跳过该条补查，保留原数据
+                # 非登录/风控异常：跳过该条补查，保留原数据
                 it.setdefault("_seller_lookup_error", str(e)[:80])
             except Exception:
                 pass
@@ -222,6 +243,7 @@ def _fetch_seller_nick_via_page(item_id: str) -> str:
     """
     import asyncio
 
+    from goofish_z.core.errors import AuthRequiredError, RiskControlError
     from goofish_z.core.browser import goofish_page
 
     JS = """
@@ -251,6 +273,8 @@ def _fetch_seller_nick_via_page(item_id: str) -> str:
 
     try:
         return asyncio.run(_run())
+    except (AuthRequiredError, RiskControlError):
+        raise
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[seller] 页面抓取卖家昵称失败 {item_id}: {e}")
         return ""

@@ -165,7 +165,11 @@ async def _run(query: str, limit: int) -> list[dict[str, Any]]:
 def search(query: str, limit: int = 20, filter_blacklist: bool = True) -> dict[str, Any]:
     # 限流：搜索间隔 30s（防接口级风控）
     from goofish_z.core.limiter import check as rate_check
+    from goofish_z.core.guard import check as guard_check
 
+    if not str(query).strip():
+        raise ValueError("搜索关键词不能为空")
+    guard_check()
     rate_check("search")
     items = asyncio.run(_run(str(query).strip(), _normalize_limit(limit)))
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -47,10 +48,12 @@ class SellerSignalDB:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init()
 
-    def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    @contextmanager
+    def _conn(self):
+        with closing(sqlite3.connect(self.db_path, timeout=30)) as conn:
+            conn.row_factory = sqlite3.Row
+            with conn:
+                yield conn
 
     def _init(self) -> None:
         with self._conn() as conn:
@@ -157,6 +160,7 @@ class SellerSignalDB:
                 (seller_nick,),
             )
             conn.execute("DELETE FROM seller_signals WHERE seller_nick=?", (seller_nick,))
+            self._refresh_profile(conn, seller_nick)
 
 
 def detect_signals(item: dict[str, Any], median_unit_price: float | None,

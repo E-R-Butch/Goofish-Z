@@ -40,7 +40,7 @@ def send(
     item_id: str = "",
 ) -> dict[str, Any]:
     session = Session.load()
-    with acquire("message.write"), watch():
+    with acquire("write"), watch():
         return asyncio.run(_send(
             session,
             cid=cid,

@@ -24,10 +24,11 @@ fun WatchScreen(vm: GoofishViewModel, onOpenHistory: () -> Unit) {
     val watches by vm.watches.collectAsState()
     val running by vm.watchRunning.collectAsState()
     val lastRun by vm.lastRun.collectAsState()
+    val watchJob by vm.watchJob.collectAsState()
     val error by vm.error.collectAsState()
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(Unit) { vm.loadWatches() }
+    LaunchedEffect(Unit) { vm.loadWatches(); vm.refreshWatchJob() }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // 标题行 + 运行按钮
@@ -46,6 +47,19 @@ fun WatchScreen(vm: GoofishViewModel, onOpenHistory: () -> Unit) {
                 Icon(Icons.Default.PlayArrow, contentDescription = null)
                 Spacer(Modifier.width(4.dp))
                 Text(if (running) "运行中…" else "全部运行")
+            }
+        }
+
+        Row(modifier = Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (running) {
+                watchJob?.let { job ->
+                    val p = job.progress
+                    val phase = if (job.cancel_requested) "等待当前请求结束后取消" else if (p.phase == "waiting") "等待搜索间隔" else "检查中"
+                    Text("$phase · ${p.completed}/${p.total} · ${p.keyword}", modifier = Modifier.weight(1f))
+                }
+                TextButton(onClick = { vm.cancelWatchRun() }) { Text("取消") }
+            } else {
+                TextButton(onClick = { vm.refreshWatchJob() }) { Text("刷新进度") }
             }
         }
 
@@ -85,13 +99,24 @@ fun WatchScreen(vm: GoofishViewModel, onOpenHistory: () -> Unit) {
                     watch = w,
                     onRemove = { vm.removeWatch(w.id) },
                     onRun = { vm.runWatches(all = false, watchId = w.id) },
+                    canRun = !running,
                 )
             }
 
             // 最近运行结果
             lastRun?.let { run ->
+                val label = when (run.status) {
+                    "succeeded" -> "完成"
+                    "partial" -> "部分失败"
+                    "failed" -> "失败"
+                    "cancelled" -> "已取消"
+                    else -> "待确认"
+                }
                 item { Spacer(Modifier.height(8.dp)) }
-                item { Text("最近运行", style = MaterialTheme.typography.titleMedium) }
+                item {
+                    Text("最近运行 · $label · 成功 ${run.succeeded} · 失败 ${run.failed} · 跳过 ${run.skipped}", style = MaterialTheme.typography.titleMedium)
+                    run.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
                 items(run.results, key = { "${it.watch_id}-${it.keyword}" }) { r ->
                     RunResultCard(r)
                 }
@@ -128,7 +153,7 @@ fun AddWatchBar(
             modifier = Modifier.weight(1f),
             placeholder = { Text("最高价¥") },
             singleLine = true,
-            keyboardOptions = androidx.compose.ui.text.input.KeyboardOptions(
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
                 keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
             ),
         )
@@ -140,7 +165,7 @@ fun AddWatchBar(
 }
 
 @Composable
-fun WatchCard(watch: WatchItem, onRemove: () -> Unit, onRun: () -> Unit) {
+fun WatchCard(watch: WatchItem, onRemove: () -> Unit, onRun: () -> Unit, canRun: Boolean = true) {
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.padding(12.dp),
@@ -163,7 +188,7 @@ fun WatchCard(watch: WatchItem, onRemove: () -> Unit, onRun: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            IconButton(onClick = onRun) {
+            IconButton(onClick = onRun, enabled = canRun) {
                 Icon(Icons.Default.PlayArrow, contentDescription = "运行")
             }
             IconButton(onClick = onRemove) {

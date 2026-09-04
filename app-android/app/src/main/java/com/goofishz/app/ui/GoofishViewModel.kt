@@ -7,6 +7,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
 
 class GoofishViewModel(
     private val api: GoofishApi,
@@ -31,6 +33,9 @@ class GoofishViewModel(
 
     private val _lastRun = MutableStateFlow<WatchRunResponse?>(null)
     val lastRun: StateFlow<WatchRunResponse?> = _lastRun.asStateFlow()
+
+    private val _watchJob = MutableStateFlow<WatchJob?>(null)
+    val watchJob: StateFlow<WatchJob?> = _watchJob.asStateFlow()
 
     // ---- 黑名单 ----
     private val _rules = MutableStateFlow<List<BlacklistRule>>(emptyList())
@@ -89,14 +94,51 @@ class GoofishViewModel(
         }
     }
 
+    private suspend fun followWatchJob(initial: WatchJob) {
+        var job = initial
+        while (true) {
+            _watchJob.value = job
+            if (job.result != null) {
+                _lastRun.value = job.result
+                loadWatches()
+                return
+            }
+            delay(1000)
+            job = api.watchJob(job.id)
+        }
+    }
+
     fun runWatches(all: Boolean = true, watchId: Int? = null) {
+        if (_watchRunning.value) return
+        _watchRunning.value = true
+        _error.value = null
         viewModelScope.launch {
-            _watchRunning.value = true
-            _error.value = null
             try {
-                _lastRun.value = api.watchRun(watchId, all)
-            } catch (e: Exception) { _error.value = e.message }
+                followWatchJob(api.watchStart(watchId, all))
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _error.value = e.message }
             finally { _watchRunning.value = false }
+        }
+    }
+
+    fun refreshWatchJob() {
+        if (_watchRunning.value) return
+        _watchRunning.value = true
+        viewModelScope.launch {
+            try {
+                api.watchJobs().jobs.firstOrNull()?.let { followWatchJob(it) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _error.value = e.message }
+            finally { _watchRunning.value = false }
+        }
+    }
+
+    fun cancelWatchRun() {
+        val id = _watchJob.value?.id ?: return
+        viewModelScope.launch {
+            try { _watchJob.value = api.watchCancel(id) }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _error.value = e.message }
         }
     }
 

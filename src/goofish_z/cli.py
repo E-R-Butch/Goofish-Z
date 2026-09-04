@@ -12,7 +12,7 @@ from goofish_z.core.output import Format, render
 from goofish_z.core.registry import Command, discover
 
 app = typer.Typer(
-    name="goofish",
+    name="goofish-z",
     help="闲鱼 CLI — 支持 MCP，未来支持 Skills。为 AI Agent 提供闲鱼自动化基础能力。",
     no_args_is_help=True,
     add_completion=False,
@@ -50,6 +50,8 @@ def _wrap(cmd: Command):
             logger.exception(e)
             raise typer.Exit(code=1) from e
         render(result, fmt=fmt, columns=cmd.columns or None)
+        if isinstance(result, dict) and result.get("status") in ("failed", "partial"):
+            raise typer.Exit(code=1)
 
     # 重建签名以让 Typer 正确推导
     new_params = list(sig.parameters.values()) + [
@@ -92,7 +94,14 @@ def build_app() -> typer.Typer:
 def version_cmd():
     """打印版本号。"""
     from goofish_z import __version__
-    print(f"goofish-omni {__version__}")
+    print(f"Goofish-Z {__version__}")
+
+
+@app.command(name="doctor")
+def doctor_cmd(format: str = Format.JSON.value):
+    """本地环境与运行状态诊断（不访问闲鱼）。"""
+    from goofish_z.commands.auth.doctor import doctor
+    render(doctor(), fmt=Format(format))
 
 
 @app.command(name="list-commands")
@@ -101,7 +110,7 @@ def list_commands(format: str = Format.TABLE.value):  # noqa: A002
     discover()
     rows = [
         {
-            "command": f"goofish {c.namespace} {c.name}",
+            "command": f"goofish-z {c.namespace} {c.name}",
             "description": c.description,
             "strategy": c.strategy.value,
             "write": c.write,

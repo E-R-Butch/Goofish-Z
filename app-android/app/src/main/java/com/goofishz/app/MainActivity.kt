@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -16,6 +17,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.goofishz.app.data.GoofishApi
 import com.goofishz.app.data.SettingsRepository
 import com.goofishz.app.ui.GoofishViewModel
@@ -58,8 +61,8 @@ fun GoofishZApp() {
     LaunchedEffect(Unit) { apiUrl = settings.apiUrl.first() }
 
     val api = remember(apiUrl) { GoofishApi { apiUrl } }
-    val vm: GoofishViewModel = viewModel(factory = androidx.lifecycle.viewmodel.ViewModelProvider.Factory {
-        GoofishViewModel(api)
+    val vm: GoofishViewModel = viewModel(factory = viewModelFactory {
+        initializer { GoofishViewModel(api) }
     })
 
     var selectedTab by remember { mutableStateOf(0) }

@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit
  */
 class GoofishApi(private val baseUrlProvider: () -> String) {
 
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS) // 搜索走浏览器路径，可能 30-60s
@@ -78,6 +78,18 @@ class GoofishApi(private val baseUrlProvider: () -> String) {
 
     suspend fun watchRun(watchId: Int? = null, all: Boolean = true, limit: Int = 10): WatchRunResponse =
         post("/api/watch/run", json.encodeToString(WatchRunRequest(watchId, all, limit))) { json.decodeFromString(it) }
+
+    suspend fun watchStart(watchId: Int? = null, all: Boolean = true, limit: Int = 10): WatchJob =
+        post("/api/watch/jobs", json.encodeToString(WatchRunRequest(watchId, all, limit))) { json.decodeFromString(it) }
+
+    suspend fun watchJob(id: String): WatchJob =
+        get("/api/watch/jobs/$id") { json.decodeFromString(it) }
+
+    suspend fun watchJobs(): WatchJobsResponse =
+        get("/api/watch/jobs") { json.decodeFromString(it) }
+
+    suspend fun watchCancel(id: String): WatchJob =
+        delete("/api/watch/jobs/$id") { json.decodeFromString(it) }
 
     // ---- 黑名单 ----
     suspend fun blacklistList(): BlacklistResponse =
