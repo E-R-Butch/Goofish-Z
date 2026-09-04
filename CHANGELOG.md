@@ -13,3 +13,4 @@
 - 补齐 Playwright / filelock 依赖、本地诊断与运行目录；版本统一为 0.2.0。
 - MCP 迁移到 2.1.1+ 的 MCPServer，支持新旧协议客户端及 stdio 输出隔离。
 - CLI/MCP 增加 watch.start / job / jobs / cancel，与 PC 网页共享后台监控任务。
+- 签名模块的 UTF-8 设置仅作用于 JavaScript 桥接，修复 Python 3.11 下 MCP 导入失败及其他子进程二进制输入受影响的问题。
