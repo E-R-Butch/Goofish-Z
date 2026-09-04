@@ -35,18 +35,39 @@ async function screen(overrides = {}) {
     ...overrides,
   };
   const requests = [];
+  let now = 0;
+  let nextTimer = 1;
+  const timers = new Map();
+  class ClockDate extends Date { static now() { return now; } }
   const context = vm.createContext({
-    document, URL, setTimeout: () => 1, clearTimeout() {}, setInterval() {},
+    document, URL, Date: ClockDate,
+    setTimeout: (fn, delay) => { const id = nextTimer++; timers.set(id, {fn, at: now + delay}); return id; },
+    clearTimeout: id => timers.delete(id), setInterval() {},
     fetch: async (url, options) => {
       requests.push([url, options]);
-      const value = responses[url];
+      const value = typeof responses[url] === 'function' ? responses[url]() : responses[url];
       if (value === undefined) throw new Error(`Unexpected test request: ${url}`);
-      return {ok: !value.testError, status: value.testError ? 400 : 200, json: async () => value};
+      const status = value.testStatus || (value.testError ? 400 : 200);
+      return {ok: status < 400, status, headers: {get: name => value.testHeaders?.[name] ?? null}, json: async () => value};
     },
   });
+  async function advance(ms) {
+    const end = now + ms;
+    for (;;) {
+      const next = [...timers.entries()].filter(([,t]) => t.at <= end).sort((a,b) => a[1].at - b[1].at)[0];
+      if (!next) break;
+      const [id, timer] = next;
+      timers.delete(id);
+      now = timer.at;
+      timer.fn();
+      await new Promise(setImmediate);
+    }
+    now = end;
+    await new Promise(setImmediate);
+  }
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/goofish_z/gui/app.js'), 'utf8'), context);
   await new Promise(setImmediate);
-  return {context, document, requests};
+  return {context, document, requests, advance};
 }
 
 test('listing and keyword markup remains literal text', async () => {
@@ -78,6 +99,77 @@ test('errors render literally and release the search button', async () => {
   await context.doSearch();
   assert.equal(document.getElementById('searchResults').textContent, detail);
   assert.equal(document.getElementById('searchButton').disabled, false);
+});
+
+test('rate-limited search waits for Retry-After and retries the same query once', async () => {
+  const path = '/api/search?q=synthetic&limit=15';
+  let calls = 0;
+  const {context, document, advance} = await screen({
+    [path]: () => ++calls === 1 ?
+      {testStatus: 429, testHeaders: {'Retry-After': '2'}, detail: 'synthetic busy'} :
+      {count: 1, items: [{title: 'synthetic item', price: '80', url: 'https://example.invalid/item'}]},
+  });
+  document.getElementById('searchQ').value = 'synthetic';
+  const running = context.doSearch();
+  await new Promise(setImmediate);
+  assert.equal(calls, 1);
+  assert.equal(document.getElementById('searchButton').disabled, true);
+  assert.equal(document.getElementById('searchQ').disabled, true);
+  assert.match(document.getElementById('searchResults').textContent, /还剩 2 秒/);
+  await context.doSearch();
+  await advance(1000);
+  assert.equal(calls, 1);
+  assert.match(document.getElementById('searchButton').textContent, /1 秒/);
+  await advance(1000);
+  await running;
+  assert.equal(calls, 2);
+  assert.match(document.getElementById('searchResults').textContent, /synthetic item/);
+  assert.equal(document.getElementById('searchButton').disabled, false);
+  assert.equal(document.getElementById('searchQ').disabled, false);
+});
+
+test('a second busy response stops automatic retries and releases the form', async () => {
+  const path = '/api/search?q=synthetic&limit=15';
+  const {context, document, requests, advance} = await screen({
+    [path]: {testStatus: 429, testHeaders: {'Retry-After': '1'}, detail: 'synthetic busy'},
+  });
+  document.getElementById('searchQ').value = 'synthetic';
+  const running = context.doSearch();
+  await new Promise(setImmediate);
+  await advance(1000);
+  await running;
+  await advance(5000);
+  assert.equal(requests.filter(([url]) => url === path).length, 2);
+  assert.match(document.getElementById('searchResults').textContent, /仍需等待 1 秒/);
+  assert.equal(document.getElementById('searchButton').disabled, false);
+});
+
+test('missing or invalid retry headers never schedule an automatic retry', async () => {
+  const path = '/api/search?q=synthetic&limit=15';
+  for (const value of [undefined, '0', '-1', 'invalid']) {
+    const {context, document, requests, advance} = await screen({
+      [path]: {testStatus: 429, testHeaders: {'Retry-After': value}, detail: 'synthetic busy'},
+    });
+    document.getElementById('searchQ').value = 'synthetic';
+    await context.doSearch();
+    await advance(5000);
+    assert.equal(requests.filter(([url]) => url === path).length, 1);
+    assert.equal(document.getElementById('searchButton').disabled, false);
+  }
+});
+
+test('authentication and circuit failures are not retried', async () => {
+  const path = '/api/search?q=synthetic&limit=15';
+  for (const status of [401, 503]) {
+    const {context, document, requests, advance} = await screen({
+      [path]: {testStatus: status, testHeaders: {'Retry-After': '2'}, detail: 'synthetic error'},
+    });
+    document.getElementById('searchQ').value = 'synthetic';
+    await context.doSearch();
+    await advance(5000);
+    assert.equal(requests.filter(([url]) => url === path).length, 1);
+    assert.equal(document.getElementById('searchResults').textContent, 'synthetic error');
+  }
 });
 
 test('failed jobs show failure rather than an empty success count', async () => {

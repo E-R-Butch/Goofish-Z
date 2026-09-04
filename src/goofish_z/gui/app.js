@@ -41,7 +41,11 @@ async function api(path, opts = {}) {
   if (!response.ok) {
     const detail = body.detail || body.error;
     const text = Array.isArray(detail) ? detail.map(e => e.msg).join('；') : detail;
-    throw new Error(text || `请求失败 (${response.status})`);
+    const error = new Error(text || `请求失败 (${response.status})`);
+    error.status = response.status;
+    const retryAfter = Number(response.headers.get('Retry-After'));
+    error.retryAfter = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.ceil(retryAfter) : null;
+    throw error;
   }
   return body;
 }
@@ -54,7 +58,7 @@ async function loadHealth() {
     const state = !d.auth.cookies_present ? '尚未登录' : auth ?
       `上次登录验证${auth.valid ? '通过' : '失败'} (${new Date(auth.checked_at * 1000).toLocaleString('zh-CN')})` : '登录状态待验证';
     $('health').className = d.circuit.tripped ? 'status err' : 'status';
-    $('healthText').textContent = `API 在线 · ${state}` +
+    $('healthText').textContent = `API${d.version ? ` v${d.version}` : ''} 在线 · ${state}` +
       (d.circuit.tripped ? ` · 风控冷却 ${d.circuit.remaining_seconds} 秒` : '');
   } catch (e) {
     $('health').className = 'status err';
@@ -78,21 +82,55 @@ function itemTable(items, history = false) {
   return table;
 }
 
+function waitForSearchSlot(seconds, query) {
+  const deadline = Date.now() + seconds * 1000;
+  return new Promise(resolve => {
+    function tick() {
+      const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      if (!remaining) return resolve();
+      $('searchButton').textContent = `等待 ${remaining} 秒`;
+      message($('searchResults'), `搜索间隔还剩 ${remaining} 秒，结束后自动继续检索“${query}”。`);
+      setTimeout(tick, Math.min(1000, deadline - Date.now()));
+    }
+    tick();
+  });
+}
+
+async function searchWithCooldown(path, query) {
+  try { return await api(path); }
+  catch (error) {
+    if (error.status !== 429 || !error.retryAfter) throw error;
+    await waitForSearchSlot(error.retryAfter, query);
+    $('searchButton').textContent = '搜索中…';
+    message($('searchResults'), `正在检索“${query}”…`);
+    // Retry this read once; another busy response goes back to the user.
+    return api(path);
+  }
+}
+
 async function doSearch() {
   const query = $('searchQ').value.trim();
   if (!query || $('searchButton').disabled) return;
   $('searchButton').disabled = true;
+  $('searchButton').textContent = '搜索中…';
+  $('searchQ').disabled = true;
   message($('searchResults'), '搜索中…');
   try {
-    const result = await api(`/api/search?q=${encodeURIComponent(query)}&limit=15`);
+    const result = await searchWithCooldown(`/api/search?q=${encodeURIComponent(query)}&limit=15`, query);
     const box = $('searchResults');
     box.replaceChildren(node('p', `展示 ${result.count || 0} 条 · 屏蔽 ${result.blocked_count || 0} 条`, 'sub'));
     if (result.items?.length) box.append(itemTable(result.items));
     for (const blocked of result.blocked || []) {
       box.append(node('div', `${blocked.title}：${(blocked.reasons || []).join('；')}`, 'alert'));
     }
-  } catch (e) { message($('searchResults'), e.message, true); }
-  finally { $('searchButton').disabled = false; }
+  } catch (e) {
+    const busy = e.status === 429 && e.retryAfter;
+    message($('searchResults'), busy ? `搜索间隔仍需等待 ${e.retryAfter} 秒，请稍后重试。` : e.message, !busy);
+  } finally {
+    $('searchButton').disabled = false;
+    $('searchButton').textContent = '搜索';
+    $('searchQ').disabled = false;
+  }
 }
 
 async function loadWatches() {
