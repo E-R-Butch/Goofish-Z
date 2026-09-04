@@ -106,6 +106,37 @@ class SearchResultsTest(OfflineCase):
         self.assertTrue(result["has_next"])
         self.assertEqual(result["page"], 2)
 
+    def test_each_automatic_filter_retains_the_item_and_its_reason(self):
+        fetched = {"items": [
+            fixture(item_id="synthetic-noise", title="求购 DDR3 32G"),
+            fixture(item_id="synthetic-capacity", title="合成 DDR3 16G"),
+            fixture(item_id="synthetic-generation", title="合成 DDR4 32G"),
+            fixture(item_id="synthetic-passed", title="合成 DDR3 32G"),
+        ], "page": 1, "source_count": 4, "has_next": True}
+        with patch.object(self.search, "_run", AsyncMock(return_value=fetched)):
+            result = self.search.search("DDR3 32G")
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["filtered_count"], 3)
+        details = {item["item_id"]: item for item in result["filtered"]}
+        self.assertEqual(details["synthetic-noise"]["reasons"], ["收购帖"])
+        self.assertIn("容量不匹配", details["synthetic-capacity"]["reasons"][0])
+        self.assertIn("DDR4", details["synthetic-generation"]["reasons"][0])
+        self.assertTrue(all(item["url"] and item["price"] and item["title"] for item in details.values()))
+
+    def test_blacklist_details_keep_full_title_link_and_rule_reason(self):
+        title = "合成被屏蔽商品的完整说明" * 10
+        item = fixture(title=title, _blocked_reasons=["合成屏蔽规则"], raw={"private": "synthetic"})
+        fetched = {"items": [item], "page": 1, "source_count": 1, "has_next": True}
+        with patch.object(self.search, "_run", AsyncMock(return_value=fetched)), \
+             patch("goofish_z.blacklist.BlacklistDB.filter_items", return_value=([], [item])):
+            result = self.search.search("synthetic")
+        detail = result["blocked"][0]
+        self.assertEqual(result["blocked_count"], 1)
+        self.assertEqual(detail["title"], title)
+        self.assertEqual(detail["url"], item["url"])
+        self.assertEqual(detail["reasons"], ["合成屏蔽规则"])
+        self.assertNotIn("raw", detail)
+
     def test_invalid_page_is_rejected_before_rate_limit_or_browser(self):
         for page in (0, -1, 51, True, 1.5):
             with self.subTest(page=page), self.assertRaises(ValueError):

@@ -242,6 +242,11 @@ def _check_payload(payload: Any) -> None:
         )
 
 
+def _filtered_item(item: dict[str, Any], reasons: list[str]) -> dict[str, Any]:
+    fields = ("item_id", "title", "price", "price_value", "price_text", "url", "location", "condition", "brand", "badge")
+    return {**{key: item[key] for key in fields if key in item}, "reasons": reasons}
+
+
 @command(
     namespace="search",
     name="items",
@@ -263,6 +268,7 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int
     fetched = asyncio.run(_run(str(query).strip(), _normalize_limit(limit), page))
     items = fetched["items"]
     fetched_count = len(items)
+    excluded: list[dict[str, Any]] = []
 
     # 噪音过滤（UNIVERSAL 硬规则）：收购帖过滤——买家是来买东西的，
     # 不是看收购广告的。任何搜索都必须过滤（用户明确要求）。
@@ -273,6 +279,7 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int
         noise = is_noise(it)
         if noise:
             it["_noise"] = noise
+            excluded.append(_filtered_item(it, [noise]))
         else:
             clean.append(it)
     items = clean
@@ -294,6 +301,7 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int
                 filtered.append(it)
             else:
                 it["_cap_mismatch"] = f"搜索{req_cap}G但商品容量不匹配"
+                excluded.append(_filtered_item(it, [it["_cap_mismatch"]]))
         items = filtered
 
     # 代数校验：query 含 DDRx 时，代数不匹配的过滤（DDR4 混进 DDR3 搜索）。
@@ -312,10 +320,12 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int
                 # 代数不匹配。DDR3 搜索里混进的 DDR4 一律过滤——
                 # 即使标了坏条/报废（买家要的是 DDR3，DDR4 坏条无练手价值）。
                 it["_gen_mismatch"] = f"搜索{req_gen}但商品是{gen}"
+                excluded.append(_filtered_item(it, [it["_gen_mismatch"]]))
         items = filtered
     result: dict[str, Any] = {
         **fetched, "items": items, "count": len(items),
         "filtered_count": fetched_count - len(items),
+        "filtered": excluded,
     }
 
     if filter_blacklist:
@@ -328,14 +338,7 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int
         passed, blocked = db.filter_items(items)
         result["items"] = passed
         result["count"] = len(passed)
-        result["blocked"] = [
-            {
-                "title": b.get("title", "")[:60],
-                "price": b.get("price"),
-                "reasons": b.get("_blocked_reasons", []),
-            }
-            for b in blocked
-        ]
+        result["blocked"] = [_filtered_item(b, b.get("_blocked_reasons", [])) for b in blocked]
         result["blocked_count"] = len(blocked)
     return result
 

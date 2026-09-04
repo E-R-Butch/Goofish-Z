@@ -15,6 +15,7 @@ class Element {
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.text = ''; this.children = children; }
   addEventListener(type, handler) { this.listeners[type] = handler; }
+  setAttribute(name, value) { (this.attributes ||= {})[name] = String(value); }
 }
 
 async function screen(overrides = {}) {
@@ -276,4 +277,65 @@ test('failed next page preserves current results and the current page number', a
   assert.match(document.getElementById('searchResults').textContent, /original result/);
   assert.match(document.getElementById('searchResults').textContent, /synthetic login required/);
   assert.equal(document.getElementById('searchNextButton').disabled, false);
+});
+
+test('trash button reveals filtered items and reasons only when opened without fetching again', async () => {
+  const unsafe = '<img src=x onerror="syntheticExecuted=true">';
+  const {context, document, requests} = await screen({
+    '/api/search?q=synthetic&limit=30&page=1': {
+      items: [{title: 'visible', price: '9500'}],
+      filtered_count: 1, filtered: [{title: 'automatic hidden', price: '¥24200', url: 'https://example.invalid/item', reasons: ['收购帖']}],
+      blocked_count: 1, blocked: [{title: unsafe, price: '80', url: 'javascript:syntheticExecuted=true', reasons: [unsafe]}],
+    },
+  });
+  document.getElementById('searchQ').value = 'synthetic';
+  await context.doSearch();
+  const box = document.getElementById('searchResults');
+  const trash = () => box.children[0].children.find(n => n.tagName === 'BUTTON');
+  assert.equal(trash().textContent, '🗑 2');
+  assert.equal(trash().attributes['aria-expanded'], 'false');
+  assert.ok(!box.textContent.includes('automatic hidden'));
+  const count = requests.length;
+  context.toggleFilteredResults();
+  assert.equal(trash().attributes['aria-expanded'], 'true');
+  assert.match(box.textContent, /automatic hidden/);
+  assert.match(box.textContent, /收购帖/);
+  assert.match(box.textContent, /¥24,200/);
+  assert.ok(box.textContent.includes(unsafe));
+  assert.equal(context.syntheticExecuted, undefined);
+  const collect = element => [element, ...element.children.flatMap(collect)];
+  assert.ok(!collect(box).some(e => e.href?.startsWith('javascript:')));
+  context.toggleFilteredResults();
+  assert.ok(!box.textContent.includes('automatic hidden'));
+  assert.equal(requests.length, count);
+});
+
+test('trash explains all matching local conditions and updates when filters are cleared', async () => {
+  const {context, document, requests} = await screen({
+    '/api/search?q=synthetic&limit=30&page=1': {
+      items: [{title: 'synthetic parts', price: '9500', location: '北京'}, {title: 'synthetic GPU', price: '面议', location: '上海'}],
+    },
+  });
+  document.getElementById('searchQ').value = 'synthetic';
+  await context.doSearch();
+  for (const [id, value] of Object.entries({searchMin: '20000', searchInclude: 'GPU', searchExclude: 'parts', searchLocation: '上海'})) {
+    document.getElementById(id).value = value;
+  }
+  context.renderSearch();
+  const count = requests.length;
+  context.toggleFilteredResults();
+  const text = document.getElementById('searchResults').textContent;
+  assert.match(text, /🗑 2/);
+  assert.match(text, /标题未包含“gpu”/);
+  assert.match(text, /标题包含排除词“parts”/);
+  assert.match(text, /地区“北京”不匹配“上海”/);
+  assert.match(text, /低于最低价/);
+  assert.match(text, /价格不明确/);
+  context.resetSearchFilters();
+  const box = document.getElementById('searchResults');
+  const trash = box.children[0].children.find(n => n.tagName === 'BUTTON');
+  assert.equal(trash.textContent, '🗑 0');
+  assert.equal(trash.disabled, true);
+  assert.ok(!box.textContent.includes('已过滤内容'));
+  assert.equal(requests.length, count);
 });

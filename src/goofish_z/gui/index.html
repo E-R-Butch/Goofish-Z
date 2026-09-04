@@ -43,6 +43,19 @@
   .pagination .sub { margin:0; }
   .search-table { max-height:520px; overflow:auto; }
   .search-table th { position:sticky; top:0; background:var(--panel); }
+  .search-summary { display:flex; align-items:flex-start; gap:8px; margin:10px 0 16px; }
+  .search-summary .sub { flex:1; margin:0; line-height:1.6; }
+  .filter-trash { white-space:nowrap; color:var(--dim); padding:5px 9px; }
+  .filter-trash[aria-expanded="true"] { border-color:var(--warn); color:var(--warn); }
+  .filter-trash:disabled { cursor:default; }
+  .filtered-details { padding:12px; margin-bottom:16px; border:1px solid var(--border); border-radius:6px; background:#14171d; }
+  .filtered-details h4 { font-size:13px; color:var(--warn); margin-bottom:8px; }
+  .filtered-item { padding:10px 0; border-bottom:1px solid var(--border); font-size:12px; overflow-wrap:anywhere; }
+  .filtered-item:last-child { border-bottom:0; }
+  .filtered-item-heading { display:flex; align-items:baseline; gap:10px; margin-bottom:5px; }
+  .filtered-item-heading .price { min-width:0; flex-shrink:0; }
+  .filtered-item-heading > :last-child { min-width:0; }
+  .filtered-item ul { color:var(--warn); padding-left:18px; margin:6px 0 0; line-height:1.5; }
   @media(max-width:600px) { body { padding:12px; } .filters { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 </style>
 </head>

@@ -5,6 +5,7 @@ let currentJob = null;
 let pollTimer = null;
 let searchState = null;
 let searchBusy = false;
+let filteredOpen = false;
 const searchCache = new Map();
 
 function node(tag, text, className) {
@@ -76,9 +77,7 @@ function itemTable(items, history = false) {
   table.append(header);
   for (const item of items) {
     const row = node('tr');
-    const amount = itemPrice(item);
-    const price = node('td', amount == null ? (item.price || '-') :
-      `¥${amount.toLocaleString('zh-CN', {maximumFractionDigits: 2})}`, 'price');
+    const price = node('td', priceLabel(item), 'price');
     if (item.price_text && /[万千]/.test(item.price_text)) {
       price.append(node('div', `页面标价 ${item.price_text}`, 'price-source'));
     }
@@ -99,6 +98,35 @@ function itemPrice(item) {
   if (!match) return null;
   const amount = Number(match[1]) * ({万: 10000, 千: 1000}[match[2]] || 1);
   return Number.isFinite(amount) ? amount : null;
+}
+
+function priceLabel(item) {
+  const amount = itemPrice(item);
+  return amount == null ? (item.price || '-') : `¥${amount.toLocaleString('zh-CN', {maximumFractionDigits: 2})}`;
+}
+
+function toggleFilteredResults() {
+  filteredOpen = !filteredOpen;
+  renderSearch();
+  $('filteredToggle')?.focus?.();
+}
+
+function filteredDetails(items) {
+  const panel = node('section', null, 'filtered-details');
+  panel.id = 'filteredDetails';
+  panel.append(node('h4', `已过滤内容（${items.length} 条）`));
+  for (const item of items) {
+    const entry = node('article', null, 'filtered-item');
+    const heading = node('div', null, 'filtered-item-heading');
+    heading.append(node('span', priceLabel(item), 'price'), itemLink(item));
+    entry.append(heading, node('div', `${item.filterSource} · ${item.location || '地区未标注'}`, 'mono'));
+    if (item.price_text && /[万千]/.test(item.price_text)) entry.append(node('div', `页面标价 ${item.price_text}`, 'price-source'));
+    const reasons = node('ul');
+    for (const reason of item.reasons || []) reasons.append(node('li', reason));
+    entry.append(reasons);
+    panel.append(entry);
+  }
+  return panel;
 }
 
 function updateSearchControls() {
@@ -123,13 +151,19 @@ function renderSearch() {
   const words = id => $(id).value.trim().toLowerCase().split(/[\s,，]+/).filter(Boolean);
   const include = words('searchInclude'), exclude = words('searchExclude');
   const location = $('searchLocation').value.trim().toLowerCase();
+  const hidden = [];
   const items = (result.items || []).filter(item => {
     const title = String(item.title || '').toLowerCase();
     const amount = itemPrice(item);
-    return include.every(word => title.includes(word)) && !exclude.some(word => title.includes(word)) &&
-      String(item.location || '').toLowerCase().includes(location) &&
-      (min == null || (amount != null && amount >= min)) &&
-      (max == null || (amount != null && amount <= max));
+    const reasons = [];
+    for (const word of include) if (!title.includes(word)) reasons.push(`标题未包含“${word}”`);
+    for (const word of exclude) if (title.includes(word)) reasons.push(`标题包含排除词“${word}”`);
+    if (!String(item.location || '').toLowerCase().includes(location)) reasons.push(`地区“${item.location || '未标注'}”不匹配“${location}”`);
+    if (amount == null && (min != null || max != null)) reasons.push('价格不明确，无法判断是否在所选范围内');
+    if (amount != null && min != null && amount < min) reasons.push(`${priceLabel(item)} 低于最低价 ¥${min}`);
+    if (amount != null && max != null && amount > max) reasons.push(`${priceLabel(item)} 高于最高价 ¥${max}`);
+    if (reasons.length) hidden.push({...item, reasons, filterSource: '当前筛选条件'});
+    return !reasons.length;
   });
   const sort = $('searchSort').value;
   if (sort === 'price_asc' || sort === 'price_desc') items.sort((a, b) => {
@@ -138,13 +172,28 @@ function renderSearch() {
     if (y == null) return -1;
     return (x - y) * (sort === 'price_asc' ? 1 : -1);
   });
+  const excluded = [
+    ...(result.filtered || []).map(item => ({...item, filterSource: '自动过滤'})),
+    ...(result.blocked || []).map(item => ({...item, filterSource: '屏蔽规则'})),
+    ...hidden,
+  ];
   const box = $('searchResults');
-  box.replaceChildren(node('p', `“${query}” · 第 ${page} 页 · 显示 ${items.length} / ${result.items?.length || 0} 条 · 自动过滤 ${result.filtered_count || 0} 条 · 屏蔽 ${result.blocked_count || 0} 条`, 'sub'));
+  const summary = node('div', null, 'search-summary');
+  summary.append(node('p', `“${query}” · 第 ${page} 页 · 显示 ${items.length} / ${result.items?.length || 0} 条 · 自动过滤 ${result.filtered_count || 0} 条 · 屏蔽 ${result.blocked_count || 0} 条` +
+    (hidden.length ? ` · 条件筛选 ${hidden.length} 条` : ''), 'sub'));
+  const trash = action(`🗑 ${excluded.length}`, toggleFilteredResults);
+  trash.id = 'filteredToggle';
+  trash.className = 'filter-trash';
+  trash.disabled = !excluded.length;
+  trash.title = excluded.length ? '查看被过滤的商品和原因' : '暂无被过滤的商品';
+  trash.setAttribute('aria-label', `查看 ${excluded.length} 条被过滤的结果`);
+  trash.setAttribute('aria-expanded', String(filteredOpen && Boolean(excluded.length)));
+  trash.setAttribute('aria-controls', 'filteredDetails');
+  summary.append(trash);
+  box.replaceChildren(summary);
+  if (filteredOpen && excluded.length) box.append(filteredDetails(excluded));
   if (items.length) box.append(itemTable(items));
   else box.append(node('div', '当前页没有符合条件的商品，可调整筛选或查看下一页。', 'sub'));
-  for (const blocked of result.blocked || []) {
-    box.append(node('div', `${blocked.title}：${(blocked.reasons || []).join('；')}`, 'alert'));
-  }
 }
 
 function resetSearchFilters() {
@@ -188,6 +237,7 @@ async function doSearch() {
 async function changeSearchPage(page) {
   if (!searchState || searchBusy || page < 1) return;
   if (searchCache.has(page)) {
+    filteredOpen = false;
     searchState = {...searchState, page, result: searchCache.get(page)};
     renderSearch();
     return;
@@ -204,6 +254,7 @@ async function fetchSearchPage(query, page, fresh) {
     const result = await searchWithCooldown(`/api/search?q=${encodeURIComponent(query)}&limit=30&page=${page}`, query);
     if (fresh) searchCache.clear();
     searchCache.set(page, result);
+    filteredOpen = false;
     searchState = {query, page, result};
     searchBusy = false;
     renderSearch();
