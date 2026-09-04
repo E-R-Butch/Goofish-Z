@@ -290,6 +290,7 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int
         _extract_capacity,
         capacity_matches,
         extract_generation,
+        extract_gpu_models,
         is_broken_stick,
     )
 
@@ -302,6 +303,19 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int
             else:
                 it["_cap_mismatch"] = f"搜索{req_cap}G但商品容量不匹配"
                 excluded.append(_filtered_item(it, [it["_cap_mismatch"]]))
+        items = filtered
+
+    # 保留完整型号后缀；多型号混售含目标型号时仍相关，无型号信息时不猜测。
+    req_models = extract_gpu_models(str(query))
+    if req_models:
+        filtered = []
+        for it in items:
+            models = extract_gpu_models(str(it.get("title", "")))
+            if not models or req_models.intersection(models):
+                filtered.append(it)
+            else:
+                reason = f"型号不匹配：搜索 {' / '.join(sorted(req_models))}，标题型号为 {' / '.join(sorted(models))}"
+                excluded.append(_filtered_item(it, [reason]))
         items = filtered
 
     # 代数校验：query 含 DDRx 时，代数不匹配的过滤（DDR4 混进 DDR3 搜索）。

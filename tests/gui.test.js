@@ -292,7 +292,7 @@ test('trash button reveals filtered items and reasons only when opened without f
   await context.doSearch();
   const box = document.getElementById('searchResults');
   const trash = () => box.children[0].children.find(n => n.tagName === 'BUTTON');
-  assert.equal(trash().textContent, '🗑 2');
+  assert.equal(trash().textContent, '🗑 已过滤 2 条 · 查看原因');
   assert.equal(trash().attributes['aria-expanded'], 'false');
   assert.ok(!box.textContent.includes('automatic hidden'));
   const count = requests.length;
@@ -325,7 +325,7 @@ test('trash explains all matching local conditions and updates when filters are 
   const count = requests.length;
   context.toggleFilteredResults();
   const text = document.getElementById('searchResults').textContent;
-  assert.match(text, /🗑 2/);
+  assert.match(text, /🗑 已过滤 2 条 · 收起/);
   assert.match(text, /标题未包含“gpu”/);
   assert.match(text, /标题包含排除词“parts”/);
   assert.match(text, /地区“北京”不匹配“上海”/);
@@ -334,7 +334,7 @@ test('trash explains all matching local conditions and updates when filters are 
   context.resetSearchFilters();
   const box = document.getElementById('searchResults');
   const trash = box.children[0].children.find(n => n.tagName === 'BUTTON');
-  assert.equal(trash.textContent, '🗑 0');
+  assert.equal(trash.textContent, '🗑 已过滤 0 条');
   assert.equal(trash.disabled, true);
   assert.ok(!box.textContent.includes('已过滤内容'));
   assert.equal(requests.length, count);

@@ -194,11 +194,12 @@ def detect_signals(item: dict[str, Any], median_unit_price: float | None,
     # 低价引流：每GB单价显著低于同类中位（容量归一化，16G ¥150 vs 32G ¥200
     # 裸价不可比，¥9.4/GB vs ¥6.25/GB 才能看出谁便宜）
     from goofish_z.core.price import price_value
+    from goofish_z.blacklist import _extract_capacity
     price = price_value(item.get("price"))
     if price is not None:
-        cap_m = re.search(r"(\d{1,3})\s*(?:GB|G)\b", title, re.IGNORECASE)
-        if cap_m and int(cap_m.group(1)) > 0 and median_unit_price and median_unit_price > 0:
-            unit = price / int(cap_m.group(1))
+        capacity = _extract_capacity(title)
+        if capacity and capacity > 0 and median_unit_price and median_unit_price > 0:
+            unit = price / capacity
             if unit < median_unit_price * 0.5:
                 signals.append("low_price_trap")
         elif median_raw_price and median_raw_price > 0:

@@ -43,10 +43,11 @@
   .pagination .sub { margin:0; }
   .search-table { max-height:520px; overflow:auto; }
   .search-table th { position:sticky; top:0; background:var(--panel); }
-  .search-summary { display:flex; align-items:flex-start; gap:8px; margin:10px 0 16px; }
-  .search-summary .sub { flex:1; margin:0; line-height:1.6; }
-  .filter-trash { white-space:nowrap; color:var(--dim); padding:5px 9px; }
-  .filter-trash[aria-expanded="true"] { border-color:var(--warn); color:var(--warn); }
+  .search-summary { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin:10px 0 16px; }
+  .search-summary .sub { flex:1 1 280px; margin:0; line-height:1.6; }
+  .filter-trash { flex-shrink:0; min-height:44px; white-space:nowrap; color:var(--warn); background:#ffb45414; border-color:#ffb45480; padding:10px 14px; font-size:15px; font-weight:600; }
+  .filter-trash[aria-expanded="true"] { background:#ffb45426; border-color:var(--warn); }
+  .filter-trash:focus-visible { outline:2px solid var(--warn); outline-offset:3px; }
   .filter-trash:disabled { cursor:default; }
   .filtered-details { padding:12px; margin-bottom:16px; border:1px solid var(--border); border-radius:6px; background:#14171d; }
   .filtered-details h4 { font-size:13px; color:var(--warn); margin-bottom:8px; }

@@ -6,6 +6,7 @@
 3. no_badge       — 屏蔽无信用标识的（badge 为空）
 4. price_drop     — 屏蔽"累计降价 N%"且 N >= 阈值的（反复降价信号）
 5. seller_nick    — 屏蔽指定卖家昵称（劣质商家 ID 库）
+6. item_id        — 精确屏蔽单件商品，note 保留人工确认的原因
 
 正则与 token 匹配逻辑整合自 ai-goofish-monitor 的 result_blacklist_service：
 - `re:` 前缀 → 正则匹配
@@ -149,7 +150,8 @@ def _to_float(v: Any) -> float | None:
     return price_value(v)
 
 
-_CAPACITY_RE = re.compile(r"(\d{1,3})\s*(?:GB|G)\b", re.IGNORECASE)
+# 中文也属于 Unicode 的 \w，不能用 \b 判断「48G涡轮」的单位结尾。
+_CAPACITY_RE = re.compile(r"(?<![\d.])(\d{1,4})\s*(?:GB|G)(?![A-Za-z0-9])", re.IGNORECASE)
 
 
 def _extract_capacity(title: str) -> int | None:
@@ -175,7 +177,7 @@ def capacity_matches(title: str, required_cap: int | None) -> bool:
     if required_cap is None:
         return True
     caps = set()
-    for m in re.finditer(r"(\d{1,3})\s*(?:GB|G)\b", str(title or ""), re.IGNORECASE):
+    for m in _CAPACITY_RE.finditer(str(title or "")):
         try:
             caps.add(int(m.group(1)))
         except ValueError:
@@ -185,6 +187,21 @@ def capacity_matches(title: str, required_cap: int | None) -> bool:
     if required_cap in caps:
         return True  # 含目标容量
     return False  # 有容量但不含目标 → 污染
+
+
+_GPU_MODEL_RE = re.compile(
+    r"(?<!\d)(?:RTX\s*)?((?:30|40|50)[5-9]0)\s*"
+    r"(?:(D|TI(?:\s*SUPER)?|SUPER)(?![A-Z]))?(?![A-Z0-9])",
+    re.IGNORECASE,
+)
+
+
+def extract_gpu_models(text: str) -> set[str]:
+    """提取 RTX 型号并保留 D / Ti / Super 后缀；4090 与 4090D 不等价。"""
+    return {
+        "RTX" + match.group(1) + re.sub(r"\s+", "", match.group(2) or "").upper()
+        for match in _GPU_MODEL_RE.finditer(str(text or ""))
+    }
 
 
 _GENERATION_RE = re.compile(r"(DDR\d)", re.IGNORECASE)
@@ -338,7 +355,10 @@ def _check_item(item: dict[str, Any], rules: list[dict[str, Any]]) -> list[str]:
         kind, value = r["kind"], str(r["value"])
         if not r["enabled"]:
             continue
-        if kind == "title_keyword":
+        if kind == "item_id":
+            if value and str(item.get("item_id", "")) == value:
+                reasons.append(str(r.get("note") or "人工屏蔽此商品"))
+        elif kind == "title_keyword":
             if value and _keyword_matches(value, title):
                 reasons.append(f"标题命中「{value}」")
         elif kind == "location":

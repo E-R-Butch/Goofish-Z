@@ -181,13 +181,14 @@ function renderSearch() {
   const summary = node('div', null, 'search-summary');
   summary.append(node('p', `“${query}” · 第 ${page} 页 · 显示 ${items.length} / ${result.items?.length || 0} 条 · 自动过滤 ${result.filtered_count || 0} 条 · 屏蔽 ${result.blocked_count || 0} 条` +
     (hidden.length ? ` · 条件筛选 ${hidden.length} 条` : ''), 'sub'));
-  const trash = action(`🗑 ${excluded.length}`, toggleFilteredResults);
+  const expanded = filteredOpen && Boolean(excluded.length);
+  const trash = action(`🗑 已过滤 ${excluded.length} 条${excluded.length ? ` · ${expanded ? '收起' : '查看原因'}` : ''}`, toggleFilteredResults);
   trash.id = 'filteredToggle';
   trash.className = 'filter-trash';
   trash.disabled = !excluded.length;
   trash.title = excluded.length ? '查看被过滤的商品和原因' : '暂无被过滤的商品';
-  trash.setAttribute('aria-label', `查看 ${excluded.length} 条被过滤的结果`);
-  trash.setAttribute('aria-expanded', String(filteredOpen && Boolean(excluded.length)));
+  trash.setAttribute('aria-label', `${expanded ? '收起' : '查看'} ${excluded.length} 条被过滤的结果`);
+  trash.setAttribute('aria-expanded', String(expanded));
   trash.setAttribute('aria-controls', 'filteredDetails');
   summary.append(trash);
   box.replaceChildren(summary);
