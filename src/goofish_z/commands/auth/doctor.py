@@ -5,6 +5,7 @@ import importlib.util
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 
 from goofish_z import __version__
 from goofish_z.core import command
@@ -25,7 +26,7 @@ def _chrome_available() -> bool:
 
 
 @command(namespace="auth", name="doctor", description="本地诊断依赖、登录验证记录、限流和熔断，不访问闲鱼")
-def doctor() -> dict:
+def doctor() -> dict[str, Any]:
     snapshot = read_state(runtime_data_path("auth_status.json"))
     last_check = None
     if snapshot:

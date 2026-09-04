@@ -12,8 +12,7 @@ dependencies = [
     "rich>=13.7",
     "pyyaml>=6.0",
     "tenacity>=8.2",
-    # FastMCP belongs to the maintained v1 SDK; v2 removed this API.
-    "mcp>=1.28.1,<2",
+    "mcp>=2.1.1,<3",
     "websockets>=13",
     "browser-cookie3>=0.20",
     "fastapi>=0.115",

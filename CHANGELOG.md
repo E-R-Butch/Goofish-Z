@@ -11,4 +11,5 @@
 - 修正 Android ViewModel 工厂及布局导入，增加请求契约测试与 Debug 构建检查。
 - 外部内容用文本节点渲染，限制商品链接协议；提供实际告警接口。
 - 补齐 Playwright / filelock 依赖、本地诊断与运行目录；版本统一为 0.2.0。
-- 将 MCP 限定到仍维护的 1.x SDK，避免全新安装选中已移除 FastMCP 的 2.x。
+- MCP 迁移到 2.1.1+ 的 MCPServer，支持新旧协议客户端及 stdio 输出隔离。
+- CLI/MCP 增加 watch.start / job / jobs / cancel，与 PC 网页共享后台监控任务。

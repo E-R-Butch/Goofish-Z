@@ -11,7 +11,7 @@ class OfflineCase(unittest.TestCase):
         temp = tempfile.TemporaryDirectory(prefix="goofish-z-test-")
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
-        self.use(patch.dict(os.environ, {"GOOFISH_Z_DATA": str(self.root)}))
+        self.use(patch.dict(os.environ, {"GOOFISH_Z_DATA": str(self.root), "GOOFISH_Z_HTTP": "http://127.0.0.1:8787"}))
         self.use(patch("requests.sessions.Session.request", side_effect=AssertionError("network forbidden in unit tests")))
         self.use(patch("goofish_z.core.session.Session.load", side_effect=AssertionError("real credentials forbidden")))
         self.watch = importlib.import_module("goofish_z.commands.watch.watch")

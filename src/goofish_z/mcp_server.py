@@ -4,9 +4,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import sys
+from contextlib import asynccontextmanager
 
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from loguru import logger
 
 from goofish_z.core.errors import GoofishError
@@ -28,7 +30,7 @@ def make_handler(func):
 
         try:
             result = await asyncio.to_thread(run)
-            if isinstance(result, dict) and result.get("status") == "failed":
+            if isinstance(result, dict) and result.get("status") == "failed" and "results" in result:
                 errors = [r.get("error", "") for r in result.get("results", []) if r.get("error")]
                 raise ToolError("监控失败：" + ("；".join(errors) or result.get("error", "请查看服务日志")))
             if isinstance(result, str):
@@ -51,8 +53,18 @@ def make_handler(func):
     return handler
 
 
-def create_server() -> FastMCP:
-    server = FastMCP("Goofish-Z")
+@asynccontextmanager
+async def _server_lifespan(_server):
+    try:
+        yield
+    finally:
+        # MCP diverts fd 1 while serving. Drain Python's buffer before the
+        # transport restores the protocol descriptor during shutdown.
+        sys.stdout.flush()
+
+
+def create_server() -> MCPServer:
+    server = MCPServer("Goofish-Z", lifespan=_server_lifespan)
     discover()
     for cmd in iter_commands():
         server.tool(name=cmd.full_name, description=cmd.description)(make_handler(cmd.func))

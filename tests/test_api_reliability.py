@@ -89,3 +89,24 @@ class ApiReliabilityTest(OfflineCase):
         self.assertFalse(response.json()["auth"]["cookies_present"])
         self.assertIsNone(response.json()["auth"]["last_check"])
         self.assertFalse((self.root/"limiter.json").exists())
+
+    def test_agent_and_web_share_the_same_background_job_and_alerts(self):
+        from goofish_z.commands.watch.jobs import watch_job, watch_start
+
+        def local_request(method, url, *, json, timeout):
+            response = self.client.request(method, url, json=json)
+            return SimpleNamespace(ok=response.is_success, status_code=response.status_code, json=response.json)
+
+        with patch("goofish_z.commands.watch.jobs.requests.request", side_effect=local_request), \
+             patch.object(self.search, "search", return_value={"items": [fixture()]}):
+            submitted = watch_start(all=True)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                result = watch_job(submitted["id"])
+                if result["result"] is not None:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(result["result"]["succeeded"], 1)
+            web = self.client.get(f"/api/watch/jobs/{submitted['id']}").json()
+            self.assertEqual(result, web)
+            self.assertEqual(len(self.client.get("/api/alerts").json()["alerts"]), 1)

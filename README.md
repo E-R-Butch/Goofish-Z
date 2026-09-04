@@ -5,12 +5,13 @@
 ## 0.2.0 更新
 
 - HTTP 监控通过工作线程执行；批量搜索按限流等待，登录失效或风控时停止本轮。
-- Web / Android 使用后台监控任务，可查看进度、等待状态和取消本轮。
+- Web / Agent 共享后台监控任务，可查看进度、等待状态和取消本轮。
 - 发布、删除和消息发送共享写操作限额；限流和熔断状态采用文件锁与原子写入。
 - 告警按真实价格观测去重，支持已读；自动屏蔽状态参与搜索和监控过滤。
 - 校验 HTTP 请求参数，修正消息列表命令名与 Android 默认值序列化。
 - 网页使用文本节点展示外部字段，拒绝可执行 URL 协议。
 - 新增本地 `doctor`，安装声明包含 Playwright 和文件锁依赖。
+- MCP 升级至 2.1.1+，验证新旧协议连接、结构化结果和普通输出隔离。
 
 ## 安装和启动
 
@@ -30,8 +31,8 @@ python3 -m venv .venv
 
 Web 面板为 `http://127.0.0.1:8787`。MCP 入口是 `.venv/bin/goofish-z-mcp`。
 首次登录或会话失效可能需要人工登录；自动刷新只做有限恢复，不保证永久在线。
-本版 MCP 使用仍维护的 1.x SDK（`>=1.28.1,<2`）；2.x 已移除 FastMCP 入口，
-需要独立迁移后再升级，见 [SDK 迁移说明](https://py.sdk.modelcontextprotocol.io/v2/migration/)。
+本版 MCP 已迁移到 2.1.1+ 的 `MCPServer`：支持新旧协议客户端，stdio 隔离可防止
+命令和子进程的普通输出污染协议流，见 [SDK 发布说明](https://github.com/modelcontextprotocol/python-sdk/releases/tag/v2.0.0)。
 
 ## 常用命令
 
@@ -44,6 +45,19 @@ Web 面板为 `http://127.0.0.1:8787`。MCP 入口是 `.venv/bin/goofish-z-mcp`�
 .venv/bin/goofish-z watch alerts --unread-only --format json
 .venv/bin/goofish-z watch read-alert 1
 ```
+
+PC 与 Agent 的长批次监控建议走后台任务。先启动 HTTP API，再通过 CLI 或同名
+MCP 工具提交、查询或取消；这组命令与网页共享任务，查询进度不会重新搜索：
+
+```bash
+.venv/bin/goofish-z watch start --all --format json
+.venv/bin/goofish-z watch jobs --format json
+.venv/bin/goofish-z watch job TASK_ID --format json
+.venv/bin/goofish-z watch cancel TASK_ID --format json
+```
+
+MCP 工具名为 `watch.start`、`watch.jobs`、`watch.job`、`watch.cancel`。本地服务
+地址默认 `http://127.0.0.1:8787`，可用 `GOOFISH_Z_HTTP` 配置。
 
 `max_price` 是低价告警线（价格小于或等于时告警），`min_price` 是高价告警线
 （价格大于或等于时告警）；两者是独立触发条件。相同价格持续满足相同条件不会重复
@@ -107,5 +121,6 @@ node --test tests/gui.test.js
 ```
 
 测试使用临时目录与合成数据，覆盖 API/MCP 调用、限流竞争、熔断、取消、告警去重、
-旧数据库迁移与网页文本渲染。Android 请求契约测试见 `app-android/`。
+旧数据库迁移、网页文本渲染，以及 MCP 新旧协议和命令/子进程输出隔离。
+Android 请求契约测试见 `app-android/`。
 离线测试不等同于真实闲鱼登录、搜索或交易验证；平台 DOM 与登录流程变化仍需实测。
