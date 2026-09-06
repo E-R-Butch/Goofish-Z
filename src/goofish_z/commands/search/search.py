@@ -17,8 +17,10 @@ from typing import Any
 from goofish_z.core import Strategy, command
 from goofish_z.core.browser import auto_scroll, goofish_page
 from goofish_z.core.errors import AuthRequiredError, GoofishError
+from goofish_z.core.price import normalize_price
 
 MAX_LIMIT = 50
+MAX_PAGE = 50
 
 
 def _normalize_limit(value: Any) -> int:
@@ -60,6 +62,7 @@ _EXTRACT_JS = r"""
     priceWrap: '[class*="price-wrap"]',
     priceNum: '[class*="number"]',
     priceDec: '[class*="decimal"]',
+    priceUnit: '[class*="magnitude"]',
     priceDesc: '[class*="price-desc"] [title], [class*="price-desc"] [style*="line-through"]',
     sellerWrap: '[class*="row4-wrap-seller"]',
     sellerText: '[class*="seller-text"]',
@@ -91,6 +94,7 @@ _EXTRACT_JS = r"""
       const priceWrap = card.querySelector(sel.priceWrap);
       const priceNumber = clean(priceWrap?.querySelector(sel.priceNum)?.textContent || '');
       const priceDecimal = clean(priceWrap?.querySelector(sel.priceDec)?.textContent || '');
+      const priceUnit = clean(card.querySelector(sel.priceUnit)?.textContent || '');
       const location = clean(card.querySelector(sel.sellerWrap)?.querySelector(sel.sellerText)?.textContent || '');
       const originalPriceNode = card.querySelector(sel.priceDesc);
       const badgeNode = card.querySelector(sel.badge);
@@ -98,7 +102,7 @@ _EXTRACT_JS = r"""
       return {
         title,
         url: href,
-        price: clean('¥' + priceNumber + priceDecimal).replace(/^¥\s*$/, ''),
+        price: priceNumber ? clean('¥' + priceNumber + priceDecimal + priceUnit) : '',
         original_price: clean(originalPriceNode?.getAttribute('title') || originalPriceNode?.textContent || ''),
         condition: attrs[0] || '',
         brand: attrs[1] || '',
@@ -109,19 +113,122 @@ _EXTRACT_JS = r"""
     })
     .filter((it) => it.title && it.url);
 
-  return { requiresAuth, blocked, empty, items, bodyPreview: bodyText.slice(0, 500) };
+  const activePage = document.querySelector('[class*="search-pagination-page-box-active"]');
+  const next = document.querySelector('[class*="search-pagination-arrow-right"]')?.closest('button');
+  return {
+    requiresAuth, blocked, empty, items, bodyPreview: bodyText.slice(0, 500),
+    source_query: new URL(window.location.href).searchParams.get('q') || '',
+    page: Number(activePage?.textContent) || 1,
+    has_next: Boolean(next && !next.disabled),
+    source_count: document.querySelectorAll(sel.card).length,
+  };
 })()
 """
 
 
-async def _run(query: str, limit: int) -> list[dict[str, Any]]:
+async def _wait_for_page_slot() -> None:
+    """A page change is another search, so it reserves the shared search bucket."""
+    from goofish_z.core.errors import RateLimitedError
+    from goofish_z.core.guard import check as guard_check
+    from goofish_z.core.limiter import check as rate_check
+
+    guard_check()
+    try:
+        rate_check("search")
+    except RateLimitedError as error:
+        await asyncio.sleep((error.retry_after or 1) + 0.1)
+        guard_check()
+        rate_check("search")
+
+
+async def _go_to_page(page: Any, number: int) -> None:
+    """Use the site's observed page picker; never bypass a login overlay."""
+    from playwright.async_api import TimeoutError as BrowserTimeout
+
+    login = page.locator('[class*="login-modal-wrap"]')
+    if await login.count() and await login.first.is_visible():
+        raise AuthRequiredError("闲鱼翻页需要登录，请在 Chrome 登录后重新导入登录态")
+    picker = page.locator('[class*="search-pagination-to-page-input--"]')
+    if not await picker.count():
+        raise GoofishError("搜索页没有可用的翻页控件")
+    previous = await page.locator('a[href*="/item?id="]').evaluate_all(
+        "cards => cards.map(card => card.getAttribute('href')).join('|')"
+    )
+    await picker.fill(str(number))
+    await _wait_for_page_slot()
+    try:
+        await page.locator('[class*="search-pagination-to-page-confirm-button"]').click(timeout=5000)
+        await page.wait_for_function(
+            """({number, previous}) => {
+              const active = document.querySelector('[class*="search-pagination-page-box-active"]');
+              const cards = [...document.querySelectorAll('a[href*="/item?id="]')];
+              return Number(active?.textContent) === number && cards.length > 0 &&
+                cards.map(card => card.getAttribute('href')).join('|') !== previous;
+            }""",
+            arg={"number": number, "previous": previous}, timeout=12000,
+        )
+    except BrowserTimeout as error:
+        if await login.count() and await login.first.is_visible():
+            raise AuthRequiredError("闲鱼翻页需要重新登录，请更新 Chrome 登录态") from error
+        raise GoofishError("闲鱼翻页未完成，请稍后重试；未将旧页当成新结果") from error
+
+
+async def _run(query: str, limit: int, page_number: int = 1) -> dict[str, Any]:
+    from playwright.async_api import TimeoutError as BrowserTimeout
+
     url = _build_search_url(query)
     async with goofish_page() as page:
-        await page.goto(url, wait_until="domcontentloaded")
-        await page.wait_for_timeout(2000)
-        await auto_scroll(page, times=2)
-        payload = await page.evaluate(_EXTRACT_JS, limit)
+        try:
+            await page.goto(url, wait_until="domcontentloaded")
+        except BrowserTimeout as error:
+            raise GoofishError("闲鱼搜索页打开超时，本次搜索未完成，请重试") from error
+        payload = await _read_search_page(page, limit)
+        _check_payload(payload, query)
+        if page_number > 1:
+            if not payload.get("has_next"):
+                raise GoofishError("没有更多搜索结果")
+            await _go_to_page(page, page_number)
+            payload = await _read_search_page(page, limit)
+            _check_payload(payload, query)
+            if payload.get("page") != page_number:
+                raise GoofishError("闲鱼返回的页码不匹配，请重新搜索")
 
+    items = payload.get("items") or []
+    return {
+        "query": query,
+        "items": [
+            {**it, **normalize_price(it.get("price")),
+             "rank": i + 1, "item_id": _item_id_from_url(it.get("url", ""))}
+            for i, it in enumerate(items)
+        ],
+        "page": page_number,
+        "has_next": bool(payload.get("has_next")) and page_number < MAX_PAGE,
+        "source_count": payload.get("source_count", len(items)),
+    }
+
+
+async def _read_search_page(page: Any, limit: int) -> dict[str, Any]:
+    """An authentication redirect can replace the DOM during the first read."""
+    from playwright.async_api import Error as BrowserError, TimeoutError as BrowserTimeout
+
+    for attempt in range(2):
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=15000)
+            await page.wait_for_timeout(2000)
+            await auto_scroll(page, times=2)
+            return await page.evaluate(_EXTRACT_JS, limit)
+        except BrowserTimeout as error:
+            raise GoofishError("闲鱼搜索页加载超时，本次搜索未完成，请重试") from error
+        except BrowserError as error:
+            if "Execution context was destroyed" not in str(error):
+                raise
+            if attempt:
+                raise GoofishError("闲鱼搜索页仍在跳转，本次搜索未完成，请重试") from error
+            # Read the new document once; do not re-submit a search or dismiss login.
+    raise GoofishError("搜索页跳转未完成")
+
+
+def _check_payload(payload: Any, query: str | None = None) -> None:
     if not isinstance(payload, dict):
         raise GoofishError("搜索页返回结构非预期")
 
@@ -145,33 +252,37 @@ async def _run(query: str, limit: int) -> list[dict[str, Any]]:
             f"页面文案预览：{preview!r}"
         )
 
-    return [
-        {
-            "rank": i + 1,
-            "item_id": _item_id_from_url(it.get("url", "")),
-            **it,
-        }
-        for i, it in enumerate(items)
-    ]
+    if query is not None and str(payload.get("source_query", "")).strip() != query.strip():
+        raise GoofishError("闲鱼页面关键词与本次搜索不一致，已丢弃结果，请重新搜索")
+
+
+def _filtered_item(item: dict[str, Any], reasons: list[str]) -> dict[str, Any]:
+    fields = ("item_id", "title", "price", "price_value", "price_text", "url", "location", "condition", "brand", "badge")
+    return {**{key: item[key] for key in fields if key in item}, "reasons": reasons}
 
 
 @command(
     namespace="search",
     name="items",
-    description="搜索闲鱼商品（浏览器路径，抗风控）",
+    description="按页搜索闲鱼商品（浏览器路径，limit 为当前页条数上限，page 为页码）",
     strategy=Strategy.COOKIE,
     columns=["rank", "item_id", "title", "price", "condition", "brand", "location", "badge", "url"],
 )
-def search(query: str, limit: int = 20, filter_blacklist: bool = True) -> dict[str, Any]:
+def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int = 1) -> dict[str, Any]:
     # 限流：搜索间隔 30s（防接口级风控）
     from goofish_z.core.limiter import check as rate_check
     from goofish_z.core.guard import check as guard_check
 
     if not str(query).strip():
         raise ValueError("搜索关键词不能为空")
+    if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= MAX_PAGE:
+        raise ValueError(f"页码必须是 1 到 {MAX_PAGE} 的整数")
     guard_check()
     rate_check("search")
-    items = asyncio.run(_run(str(query).strip(), _normalize_limit(limit)))
+    fetched = asyncio.run(_run(str(query).strip(), _normalize_limit(limit), page))
+    items = fetched["items"]
+    fetched_count = len(items)
+    excluded: list[dict[str, Any]] = []
 
     # 噪音过滤（UNIVERSAL 硬规则）：收购帖过滤——买家是来买东西的，
     # 不是看收购广告的。任何搜索都必须过滤（用户明确要求）。
@@ -182,6 +293,7 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True) -> dict[s
         noise = is_noise(it)
         if noise:
             it["_noise"] = noise
+            excluded.append(_filtered_item(it, [noise]))
         else:
             clean.append(it)
     items = clean
@@ -192,6 +304,7 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True) -> dict[s
         _extract_capacity,
         capacity_matches,
         extract_generation,
+        extract_gpu_models,
         is_broken_stick,
     )
 
@@ -203,6 +316,20 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True) -> dict[s
                 filtered.append(it)
             else:
                 it["_cap_mismatch"] = f"搜索{req_cap}G但商品容量不匹配"
+                excluded.append(_filtered_item(it, [it["_cap_mismatch"]]))
+        items = filtered
+
+    # 保留完整型号后缀；多型号混售含目标型号时仍相关，无型号信息时不猜测。
+    req_models = extract_gpu_models(str(query))
+    if req_models:
+        filtered = []
+        for it in items:
+            models = extract_gpu_models(str(it.get("title", "")))
+            if not models or req_models.intersection(models):
+                filtered.append(it)
+            else:
+                reason = f"型号不匹配：搜索 {' / '.join(sorted(req_models))}，标题型号为 {' / '.join(sorted(models))}"
+                excluded.append(_filtered_item(it, [reason]))
         items = filtered
 
     # 代数校验：query 含 DDRx 时，代数不匹配的过滤（DDR4 混进 DDR3 搜索）。
@@ -221,8 +348,13 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True) -> dict[s
                 # 代数不匹配。DDR3 搜索里混进的 DDR4 一律过滤——
                 # 即使标了坏条/报废（买家要的是 DDR3，DDR4 坏条无练手价值）。
                 it["_gen_mismatch"] = f"搜索{req_gen}但商品是{gen}"
+                excluded.append(_filtered_item(it, [it["_gen_mismatch"]]))
         items = filtered
-    result: dict[str, Any] = {"items": items, "count": len(items)}
+    result: dict[str, Any] = {
+        **fetched, "items": items, "count": len(items),
+        "filtered_count": fetched_count - len(items),
+        "filtered": excluded,
+    }
 
     if filter_blacklist:
         from goofish_z.blacklist import BlacklistDB
@@ -234,14 +366,7 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True) -> dict[s
         passed, blocked = db.filter_items(items)
         result["items"] = passed
         result["count"] = len(passed)
-        result["blocked"] = [
-            {
-                "title": b.get("title", "")[:60],
-                "price": b.get("price"),
-                "reasons": b.get("_blocked_reasons", []),
-            }
-            for b in blocked
-        ]
+        result["blocked"] = [_filtered_item(b, b.get("_blocked_reasons", [])) for b in blocked]
         result["blocked_count"] = len(blocked)
     return result
 

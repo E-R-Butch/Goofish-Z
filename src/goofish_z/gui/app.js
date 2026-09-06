@@ -3,6 +3,11 @@
 const $ = id => document.getElementById(id);
 let currentJob = null;
 let pollTimer = null;
+let searchState = null;
+let searchBusy = false;
+let filteredOpen = false;
+const searchCache = new Map();
+const searchCacheKey = (query, page) => JSON.stringify([query, page]);
 
 function node(tag, text, className) {
   const element = document.createElement(tag);
@@ -41,7 +46,11 @@ async function api(path, opts = {}) {
   if (!response.ok) {
     const detail = body.detail || body.error;
     const text = Array.isArray(detail) ? detail.map(e => e.msg).join('；') : detail;
-    throw new Error(text || `请求失败 (${response.status})`);
+    const error = new Error(text || `请求失败 (${response.status})`);
+    error.status = response.status;
+    const retryAfter = Number(response.headers.get('Retry-After'));
+    error.retryAfter = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.ceil(retryAfter) : null;
+    throw error;
   }
   return body;
 }
@@ -54,7 +63,7 @@ async function loadHealth() {
     const state = !d.auth.cookies_present ? '尚未登录' : auth ?
       `上次登录验证${auth.valid ? '通过' : '失败'} (${new Date(auth.checked_at * 1000).toLocaleString('zh-CN')})` : '登录状态待验证';
     $('health').className = d.circuit.tripped ? 'status err' : 'status';
-    $('healthText').textContent = `API 在线 · ${state}` +
+    $('healthText').textContent = `API${d.version ? ` v${d.version}` : ''} 在线 · ${state}` +
       (d.circuit.tripped ? ` · 风控冷却 ${d.circuit.remaining_seconds} 秒` : '');
   } catch (e) {
     $('health').className = 'status err';
@@ -69,7 +78,11 @@ function itemTable(items, history = false) {
   table.append(header);
   for (const item of items) {
     const row = node('tr');
-    row.append(node('td', item.price == null ? '-' : item.price, 'price'));
+    const price = node('td', priceLabel(item), 'price');
+    if (item.price_text && /[万千]/.test(item.price_text)) {
+      price.append(node('div', `页面标价 ${item.price_text}`, 'price-source'));
+    }
+    row.append(price);
     const title = node('td');
     title.append(itemLink(item));
     row.append(title, node('td', history ? new Date(item.checked_at * 1000).toLocaleString('zh-CN') : item.location || '', 'mono'));
@@ -78,21 +91,198 @@ function itemTable(items, history = false) {
   return table;
 }
 
+function itemPrice(item) {
+  if (item.price_value !== undefined) {
+    return typeof item.price_value === 'number' && Number.isFinite(item.price_value) && item.price_value >= 0 ? item.price_value : null;
+  }
+  const match = String(item.price ?? '').replace(/[\s,，]/g, '').match(/^[¥￥]?(\d+(?:\.\d+)?)(万|千)?元?$/);
+  if (!match) return null;
+  const amount = Number(match[1]) * ({万: 10000, 千: 1000}[match[2]] || 1);
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function priceLabel(item) {
+  const amount = itemPrice(item);
+  return amount == null ? (item.price || '-') : `¥${amount.toLocaleString('zh-CN', {maximumFractionDigits: 2})}`;
+}
+
+function toggleFilteredResults() {
+  filteredOpen = !filteredOpen;
+  renderSearch();
+  $('filteredToggle')?.focus?.();
+}
+
+function filteredDetails(items) {
+  const panel = node('section', null, 'filtered-details');
+  panel.id = 'filteredDetails';
+  panel.append(node('h4', `已过滤内容（${items.length} 条）`));
+  for (const item of items) {
+    const entry = node('article', null, 'filtered-item');
+    const heading = node('div', null, 'filtered-item-heading');
+    heading.append(node('span', priceLabel(item), 'price'), itemLink(item));
+    entry.append(heading, node('div', `${item.filterSource} · ${item.location || '地区未标注'}`, 'mono'));
+    if (item.price_text && /[万千]/.test(item.price_text)) entry.append(node('div', `页面标价 ${item.price_text}`, 'price-source'));
+    const reasons = node('ul');
+    for (const reason of item.reasons || []) reasons.append(node('li', reason));
+    entry.append(reasons);
+    panel.append(entry);
+  }
+  return panel;
+}
+
+function updateSearchControls() {
+  $('searchButton').disabled = searchBusy;
+  $('searchQ').disabled = searchBusy;
+  $('searchPrevButton').disabled = searchBusy || !searchState || searchState.page <= 1;
+  $('searchNextButton').disabled = searchBusy || !searchState?.result.has_next;
+  $('searchPageLabel').textContent = searchState ?
+    `第 ${searchState.page} 页${searchState.result.has_next ? '' : ' · 已到末页'}` : '每页最多 30 条';
+}
+
+function renderSearch() {
+  if (!searchState || searchBusy) return;
+  updateSearchControls();
+  const {result, query, page} = searchState;
+  const min = $('searchMin').value.trim() === '' ? null : Number($('searchMin').value);
+  const max = $('searchMax').value.trim() === '' ? null : Number($('searchMax').value);
+  if ([min, max].some(n => n != null && (!Number.isFinite(n) || n < 0)) ||
+      (min != null && max != null && min > max)) {
+    return message($('searchResults'), '价格范围必须是非负数，最低价不能高于最高价。', true);
+  }
+  const words = id => $(id).value.trim().toLowerCase().split(/[\s,，]+/).filter(Boolean);
+  const include = words('searchInclude'), exclude = words('searchExclude');
+  const location = $('searchLocation').value.trim().toLowerCase();
+  const hidden = [];
+  const items = (result.items || []).filter(item => {
+    const title = String(item.title || '').toLowerCase();
+    const amount = itemPrice(item);
+    const reasons = [];
+    for (const word of include) if (!title.includes(word)) reasons.push(`标题未包含“${word}”`);
+    for (const word of exclude) if (title.includes(word)) reasons.push(`标题包含排除词“${word}”`);
+    if (!String(item.location || '').toLowerCase().includes(location)) reasons.push(`地区“${item.location || '未标注'}”不匹配“${location}”`);
+    if (amount == null && (min != null || max != null)) reasons.push('价格不明确，无法判断是否在所选范围内');
+    if (amount != null && min != null && amount < min) reasons.push(`${priceLabel(item)} 低于最低价 ¥${min}`);
+    if (amount != null && max != null && amount > max) reasons.push(`${priceLabel(item)} 高于最高价 ¥${max}`);
+    if (reasons.length) hidden.push({...item, reasons, filterSource: '当前筛选条件'});
+    return !reasons.length;
+  });
+  const sort = $('searchSort').value;
+  if (sort === 'price_asc' || sort === 'price_desc') items.sort((a, b) => {
+    const x = itemPrice(a), y = itemPrice(b);
+    if (x == null) return y == null ? 0 : 1;
+    if (y == null) return -1;
+    return (x - y) * (sort === 'price_asc' ? 1 : -1);
+  });
+  const excluded = [
+    ...(result.filtered || []).map(item => ({...item, filterSource: '自动过滤'})),
+    ...(result.blocked || []).map(item => ({...item, filterSource: '屏蔽规则'})),
+    ...hidden,
+  ];
+  const box = $('searchResults');
+  const summary = node('div', null, 'search-summary');
+  summary.append(node('p', `“${query}” · 第 ${page} 页 · 显示 ${items.length} / ${result.items?.length || 0} 条 · 自动过滤 ${result.filtered_count || 0} 条 · 屏蔽 ${result.blocked_count || 0} 条` +
+    (hidden.length ? ` · 条件筛选 ${hidden.length} 条` : ''), 'sub'));
+  const expanded = filteredOpen && Boolean(excluded.length);
+  const trash = action(`🗑 已过滤 ${excluded.length} 条${excluded.length ? ` · ${expanded ? '收起' : '查看原因'}` : ''}`, toggleFilteredResults);
+  trash.id = 'filteredToggle';
+  trash.className = 'filter-trash';
+  trash.disabled = !excluded.length;
+  trash.title = excluded.length ? '查看被过滤的商品和原因' : '暂无被过滤的商品';
+  trash.setAttribute('aria-label', `${expanded ? '收起' : '查看'} ${excluded.length} 条被过滤的结果`);
+  trash.setAttribute('aria-expanded', String(expanded));
+  trash.setAttribute('aria-controls', 'filteredDetails');
+  summary.append(trash);
+  box.replaceChildren(summary);
+  if (filteredOpen && excluded.length) box.append(filteredDetails(excluded));
+  if (items.length) box.append(itemTable(items));
+  else box.append(node('div', '当前页没有符合条件的商品，可调整筛选或查看下一页。', 'sub'));
+}
+
+function resetSearchFilters() {
+  for (const id of ['searchMin', 'searchMax', 'searchLocation', 'searchInclude', 'searchExclude']) $(id).value = '';
+  $('searchSort').value = 'default';
+  renderSearch();
+}
+
+function waitForSearchSlot(seconds, query) {
+  const deadline = Date.now() + seconds * 1000;
+  return new Promise(resolve => {
+    function tick() {
+      const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      if (!remaining) return resolve();
+      $('searchButton').textContent = `等待 ${remaining} 秒`;
+      message($('searchResults'), `搜索间隔还剩 ${remaining} 秒，结束后自动继续检索“${query}”。`);
+      setTimeout(tick, Math.min(1000, deadline - Date.now()));
+    }
+    tick();
+  });
+}
+
+async function searchWithCooldown(path, query) {
+  try { return await api(path); }
+  catch (error) {
+    if (error.status !== 429 || !error.retryAfter) throw error;
+    await waitForSearchSlot(error.retryAfter, query);
+    $('searchButton').textContent = '搜索中…';
+    message($('searchResults'), `正在检索“${query}”…`);
+    // Retry this read once; another busy response goes back to the user.
+    return api(path);
+  }
+}
+
 async function doSearch() {
   const query = $('searchQ').value.trim();
-  if (!query || $('searchButton').disabled) return;
-  $('searchButton').disabled = true;
-  message($('searchResults'), '搜索中…');
+  if (!query || searchBusy) return;
+  return fetchSearchPage(query, 1, true);
+}
+
+async function changeSearchPage(page) {
+  if (!searchState || searchBusy || page < 1) return;
+  const key = searchCacheKey(searchState.query, page);
+  if (searchCache.has(key)) {
+    filteredOpen = false;
+    $('searchStatus').replaceChildren();
+    searchState = {...searchState, page, result: searchCache.get(key)};
+    renderSearch();
+    return;
+  }
+  return fetchSearchPage(searchState.query, page, false);
+}
+
+async function fetchSearchPage(query, page, fresh) {
+  // 新搜索从提交时起就与旧关键词隔离，包括失败和限流等待期间。
+  if (fresh) {
+    searchState = null;
+    searchCache.clear();
+    filteredOpen = false;
+  }
+  $('searchStatus').replaceChildren();
+  searchBusy = true;
+  updateSearchControls();
+  $('searchButton').textContent = '搜索中…';
+  message($('searchResults'), `正在检索“${query}”第 ${page} 页…翻页也会等待搜索间隔。`);
   try {
-    const result = await api(`/api/search?q=${encodeURIComponent(query)}&limit=15`);
-    const box = $('searchResults');
-    box.replaceChildren(node('p', `展示 ${result.count || 0} 条 · 屏蔽 ${result.blocked_count || 0} 条`, 'sub'));
-    if (result.items?.length) box.append(itemTable(result.items));
-    for (const blocked of result.blocked || []) {
-      box.append(node('div', `${blocked.title}：${(blocked.reasons || []).join('；')}`, 'alert'));
+    const result = await searchWithCooldown(`/api/search?q=${encodeURIComponent(query)}&limit=30&page=${page}`, query);
+    if (result.query !== query || result.page !== page) {
+      throw new Error('搜索响应的关键词或页码不一致，已丢弃结果，请重新搜索。');
     }
-  } catch (e) { message($('searchResults'), e.message, true); }
-  finally { $('searchButton').disabled = false; }
+    searchCache.set(searchCacheKey(query, page), result);
+    filteredOpen = false;
+    searchState = {query, page, result};
+    searchBusy = false;
+    renderSearch();
+  } catch (e) {
+    const busy = e.status === 429 && e.retryAfter;
+    searchBusy = false;
+    const text = busy ? `搜索间隔仍需等待 ${e.retryAfter} 秒，请稍后重试。` : e.message;
+    message($('searchStatus'), `“${query}”第 ${page} 页搜索失败：${text}`, true);
+    if (searchState) renderSearch();
+    else message($('searchResults'), '本次搜索未完成，尚无可展示的结果。请点击搜索重试。');
+  } finally {
+    searchBusy = false;
+    $('searchButton').textContent = '搜索';
+    updateSearchControls();
+  }
 }
 
 async function loadWatches() {
@@ -240,6 +430,11 @@ async function loadAlerts() {
 
 $('searchButton').addEventListener('click', doSearch);
 $('searchQ').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+$('searchPrevButton').addEventListener('click', () => changeSearchPage(searchState.page - 1));
+$('searchNextButton').addEventListener('click', () => changeSearchPage(searchState.page + 1));
+$('resetFiltersButton').addEventListener('click', resetSearchFilters);
+for (const id of ['searchMin', 'searchMax', 'searchLocation', 'searchInclude', 'searchExclude']) $(id).addEventListener('input', renderSearch);
+$('searchSort').addEventListener('change', renderSearch);
 $('addWatchButton').addEventListener('click', addWatch);
 $('watchQ').addEventListener('keydown', e => { if (e.key === 'Enter') addWatch(); });
 $('runAllButton').addEventListener('click', runAll);

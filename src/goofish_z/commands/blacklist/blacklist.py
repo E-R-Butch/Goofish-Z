@@ -17,12 +17,12 @@ def _db() -> BlacklistDB:
 @command(
     namespace="blacklist",
     name="add",
-    description="添加屏蔽规则: title_keyword=标题关键词 / location=地区 / no_badge=无信用标识 / price_drop=累计降价阈值%",
+    description="添加屏蔽规则: item_id=单件商品(用 note 写明原因) / title_keyword=标题关键词 / location=地区 / no_badge=无信用标识 / price_drop=累计降价阈值%",
     columns=["id", "kind", "value", "note", "enabled"],
 )
 def blacklist_add(kind: str, value: str, note: str = "") -> dict[str, Any]:
     kind = kind.lower().strip()
-    valid = {"title_keyword", "location", "no_badge", "price_drop", "seller_nick", "price_anomaly"}
+    valid = {"item_id", "title_keyword", "location", "no_badge", "price_drop", "seller_nick", "price_anomaly"}
     if kind not in valid:
         raise ValueError(f"kind 必须是 {sorted(valid)}")
     if kind == "no_badge":

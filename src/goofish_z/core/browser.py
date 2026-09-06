@@ -35,34 +35,15 @@ from goofish_z.core.paths import runtime_data_path
 
 PROFILES_PARENT = runtime_data_path("profiles")
 
-# 需要种的域。goofish.com 下的 cookie 只在 .goofish.com 生效，
-# 但淘系签名链路依赖的 _m_h5_tk / x5sec / sgcookie 历史上会跨 .taobao.com。
-# playwright 的 add_cookies 要求显式 domain，所以我们按 cookie 名分发。
-_TAOBAO_COOKIE_NAMES = {"_m_h5_tk", "_m_h5_tk_enc", "x5sec", "sgcookie", "cookie2", "_tb_token_"}
-
-
-def _split_cookie_domain(name: str) -> str:
-    """按 cookie 名字反推它归属哪个域。
-
-    名字明显是淘系签名链（_m_h5_tk / x5sec / cookie2 / sgcookie）的 → `.taobao.com`，
-    其余一律当 goofish 下：`.goofish.com`。实际浏览器里这些 cookie 是从
-    `api.m.taobao.com` 和 `www.goofish.com` 分头写入的，所以灌的时候也要分头。
-    """
-    return ".taobao.com" if name in _TAOBAO_COOKIE_NAMES else ".goofish.com"
-
-
 def _cookies_to_playwright(cookies: dict[str, str] | list[dict[str, Any]]) -> list[dict[str, Any]]:
     """把 cookie 转成 playwright `add_cookies` 需要的列表形态。
 
     支持两种输入：
-    - dict {name: value} — domain 按名字猜（旧格式兼容）
+    - dict {name: value} — 闲鱼请求的 Cookie 头，归属 .goofish.com
     - list [{name,value,domain,path,secure,httpOnly}] — 保留扫码时的原始 domain
       （关键：cookie2/_m_h5_tk 等淘系 cookie 实际来自 .goofish.com 或 .taobao.com，
       猜错域会导致登录态不被识别——2026-08-08 实测修复）
     """
-    now = int(__import__("time").time())
-    # 7 天后过期——cookies.json 自身会被 Session 层更新，这里只要够跑完当前命令就行
-    expires = now + 7 * 24 * 3600
     out: list[dict[str, Any]] = []
 
     if isinstance(cookies, dict):
@@ -78,17 +59,20 @@ def _cookies_to_playwright(cookies: dict[str, str] | list[dict[str, Any]]) -> li
         name = c.get("name")
         if not name:
             continue
-        domain = c.get("domain") or _split_cookie_domain(name)
-        out.append({
+        domain = c.get("domain") or ".goofish.com"
+        entry = {
             "name": name,
             "value": c.get("value"),
             "domain": domain,
             "path": c.get("path", "/"),
-            "expires": expires,
             "httpOnly": bool(c.get("httpOnly", False)),
             "secure": bool(c.get("secure", True)),
-            "sameSite": "None",
-        })
+        }
+        if c.get("expires") is not None:
+            entry["expires"] = c["expires"]
+        if c.get("sameSite") in ("Lax", "Strict", "None"):
+            entry["sameSite"] = c["sameSite"]
+        out.append(entry)
     return out
 
 
@@ -104,7 +88,7 @@ def _load_cookies_from_session() -> dict[str, str] | list[dict[str, Any]]:
             import json as _json
 
             raw = _json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(raw, list) and raw and "domain" in raw[0]:
+            if isinstance(raw, list) and raw:
                 # 完整字段格式（扫码写入）——保留 domain
                 return raw
         except Exception:  # noqa: BLE001
@@ -118,7 +102,7 @@ async def goofish_page(
     *,
     headless: bool | None = None,
     viewport: tuple[int, int] = (1280, 800),
-    cookies: dict[str, str] | None = None,
+    cookies: dict[str, str] | list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[Any]:
     """启动系统 Chrome（独立 tmp profile）+ 灌 cookie，yield 出一个 `Page`。
 
@@ -164,7 +148,9 @@ async def goofish_page(
             try:
                 await context.add_cookies(pw_cookies)
             except Exception as e:  # noqa: BLE001
-                logger.warning(f"注入 cookie 失败：{e}")
+                from goofish_z.core.errors import AuthRequiredError
+                await context.close()
+                raise AuthRequiredError("浏览器登录态注入失败，请重新导入 Chrome 登录态") from e
 
             page = context.pages[0] if context.pages else await context.new_page()
             # 隐藏自动化特征（指纹层）：
@@ -226,7 +212,12 @@ async def goofish_page(
 
 async def auto_scroll(page: Any, times: int = 2, pause_ms: int = 800) -> None:
     """模拟 OpenCLI 的 `page.autoScroll({times})`：滚到底 N 次触发懒加载。"""
+    await page.wait_for_function("Boolean(document.body)", timeout=15000)
     for _ in range(times):
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        # 登录跳转可能在等待结束后替换文档，不能假定 body 始终存在。
+        await page.evaluate("""() => {
+            const body = document.body;
+            if (body) window.scrollTo(0, body.scrollHeight);
+        }""")
         await page.wait_for_timeout(pause_ms)
     await page.evaluate("window.scrollTo(0, 0)")

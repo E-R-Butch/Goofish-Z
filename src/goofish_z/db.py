@@ -252,12 +252,5 @@ def _alert_reason(watch: Any, price: float) -> str:
 
 
 def _to_float(v: Any) -> float | None:
-    """'¥180' → 180.0；'包邮' → None。"""
-    if v is None:
-        return None
-    s = str(v).replace("¥", "").replace("￥", "").strip()
-    try:
-        value = float(s)
-        return round(value, 2) if math.isfinite(value) and value >= 0 else None
-    except ValueError:
-        return None
+    from goofish_z.core.price import price_value
+    return price_value(v)

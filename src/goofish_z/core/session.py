@@ -113,7 +113,8 @@ class Session:
             ret = str(resp.json().get("ret", ""))
             ok = "SUCCESS" in ret.upper() or "成功" in ret
             if ok:
-                write_cookies_json(resolve_cookie_path(), dict(self.http.cookies))
+                from goofish_z.core.browser_cookie import _jars_to_entries
+                update_cookies_json(resolve_cookie_path(), _jars_to_entries([resp.cookies]))
             return ok
         except Exception as e:  # noqa: BLE001
             logger.warning(f"refresh_token 异常: {e}")
@@ -141,13 +142,13 @@ def _load_or_bootstrap_cookies(path: Path) -> dict[str, str]:
         except AuthRequiredError:
             pass
     try:
-        import browser_cookie3
+        from goofish_z.core.browser_cookie import extract_goofish_cookies
 
-        cj = browser_cookie3.chrome(domain_name="goofish.com")
-        cookies = {c.name: c.value for c in cj}
+        _, entries = extract_goofish_cookies(browser="chrome")
+        cookies = goofish_cookie_values(entries)
         if cookies:
             logger.info("从本机 Chrome 自动抓取到 cookie")
-            write_cookies_json(path, cookies)
+            write_cookies_json(path, entries)
             return cookies
     except Exception as e:  # noqa: BLE001
         logger.debug(f"Chrome cookie 自动抓取失败: {e}")
@@ -156,7 +157,7 @@ def _load_or_bootstrap_cookies(path: Path) -> dict[str, str]:
 
 def write_cookies_json(path: Path, cookies: dict[str, str] | list[dict[str, Any]]) -> None:
     """写入 cookie 文件。支持两种格式：
-    - dict {name: value} — 自动补 domain 占位（加载时按名字猜域）
+    - dict {name: value} — 闲鱼请求 Cookie 头，默认 .goofish.com
     - list [{name,value,domain,path,secure,httpOnly}] — 保留完整字段（扫码路径）
     """
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -176,6 +177,40 @@ def write_cookies_json(path: Path, cookies: dict[str, str] | list[dict[str, Any]
         path.chmod(0o600)
     except OSError:
         pass
+
+
+def goofish_cookie_values(cookies: dict[str, str] | list[dict[str, Any]]) -> dict[str, str]:
+    """Select the HTTP API's cookies without mixing same-name Taobao credentials."""
+    if isinstance(cookies, dict):
+        return {str(k): str(v) for k, v in cookies.items() if v is not None}
+    host = "h5api.m.goofish.com"
+    candidates = []
+    for cookie in cookies:
+        scope = cookie.get("domain") or ".goofish.com"
+        domain = scope.lstrip(".")
+        if host != domain and not (scope.startswith(".") and host.endswith("." + domain)):
+            continue
+        expires = cookie.get("expires")
+        if expires is not None and expires > 0 and expires <= _time.time():
+            continue
+        candidates.append((len(domain), cookie))
+    values: dict[str, str] = {}
+    for _, cookie in sorted(candidates, key=lambda pair: pair[0]):
+        if cookie.get("name") and cookie.get("value"):
+            values[cookie["name"]] = cookie["value"]
+    return values
+
+
+def update_cookies_json(path: Path, fresh: list[dict[str, Any]]) -> None:
+    """Refresh only matching name/domain/path entries; keep other origins intact."""
+    existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+    if isinstance(existing, dict):
+        existing = [{"name": k, "value": v} for k, v in existing.items()]
+    merged = {}
+    for cookie in [*existing, *fresh]:
+        entry = {**cookie, "domain": cookie.get("domain") or ".goofish.com", "path": cookie.get("path") or "/"}
+        merged[(entry["name"], entry["domain"], entry["path"])] = entry
+    write_cookies_json(path, list(merged.values()))
 
 
 def _load_or_mint_device_id(unb: str, cache_path: Path | None = None) -> str:
@@ -200,7 +235,7 @@ def _load_cookies(path: Path) -> dict[str, str]:
     raw = json.loads(text)
     # 兼容两种格式：list[{name,value}] / dict
     if isinstance(raw, list):
-        return {c["name"]: c["value"] for c in raw if "name" in c and "value" in c}
+        return goofish_cookie_values(raw)
     if isinstance(raw, dict):
         return {str(k): str(v) for k, v in raw.items()}
     raise AuthRequiredError(f"cookies.json 格式不识别：{path}")

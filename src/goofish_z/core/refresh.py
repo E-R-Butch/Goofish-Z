@@ -28,7 +28,7 @@ from typing import Any
 
 from loguru import logger
 
-from goofish_z.core.session import Session, resolve_cookie_path, write_cookies_json
+from goofish_z.core.session import Session, resolve_cookie_path, update_cookies_json, goofish_cookie_values
 
 HOME_URL = "https://www.goofish.com"
 # 强鉴权页，goto 后服务端必须下发完整 session cookie（cookie2/sgcookie/_tb_token_）
@@ -68,7 +68,7 @@ async def _try_quick_enter(page: Any) -> bool:
         return False
 
 
-async def _refresh_async(cookies: dict[str, str]) -> dict[str, str]:
+async def _refresh_async(cookies: dict[str, str]) -> list[dict[str, Any]]:
     # 延迟 import：测试环境没装 playwright 也能 import refresh 模块
     from goofish_z.core.browser import goofish_page
 
@@ -80,10 +80,10 @@ async def _refresh_async(cookies: dict[str, str]) -> dict[str, str]:
         await page.wait_for_timeout(1500)
 
         # 有弹窗但"快速进入"不可用 → 浏览器免密记忆彻底失效，后续 goto /bought
-        # 也只会被跳登录页。直接返回空 dict 让上层报原始 AuthRequiredError，
+        # 也只会被跳登录页。直接返回空列表让上层报原始 AuthRequiredError，
         # 避免返回"只更新了 _m_h5_tk 但 session 仍失效"的假成功 cookies。
         if not await _try_quick_enter(page):
-            return {}
+            return []
 
         # 访问强鉴权页，触发服务端下发完整 session cookies（cookie2 / sgcookie /
         # _tb_token_ 会被 Set-Cookie 刷新）。
@@ -95,7 +95,7 @@ async def _refresh_async(cookies: dict[str, str]) -> dict[str, str]:
 
         pw_cookies = await page.context.cookies()
 
-    return {c["name"]: c["value"] for c in pw_cookies if c.get("name") and c.get("value")}
+    return [c for c in pw_cookies if c.get("name") and c.get("value")]
 
 
 def is_enabled() -> bool:
@@ -110,7 +110,8 @@ def refresh_cookies_via_browser(session: Session, *, persist: bool = True) -> bo
     """
     current = {name: value for name, value in session.http.cookies.items() if value}
     try:
-        fresh = asyncio.run(_refresh_async(current))
+        entries = asyncio.run(_refresh_async(current))
+        fresh = goofish_cookie_values(entries)
     except Exception as e:  # noqa: BLE001 — Playwright 起不来、Chrome 未装、超时等都走这里
         logger.warning(f"用 Playwright 刷 cookie 失败：{e}")
         return False
@@ -136,10 +137,9 @@ def refresh_cookies_via_browser(session: Session, *, persist: bool = True) -> bo
         # 尊重 GOOFISH_COOKIES_PATH —— 用户配置了自定义路径时不能写默认路径后再下次
         # Session.load 又去读自定义路径，造成"刷新了但下次启动又回到旧的"。
         path = resolve_cookie_path()
-        # 此时 session.http.cookies 已没有同名冲突，安全转 dict
-        merged = {**dict(session.http.cookies), **fresh}
+        # 只更新同域同路径的条目，保留其他来源 Cookie 的元数据。
         try:
-            write_cookies_json(path, merged)
+            update_cookies_json(path, entries)
             logger.info(f"cookie 已刷新并写回 {path}")
         except OSError as e:
             logger.debug(f"写回 cookies.json 失败（内存里仍生效）：{e}")

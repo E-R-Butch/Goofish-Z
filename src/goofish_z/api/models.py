@@ -28,7 +28,7 @@ class WatchRun(RequestModel):
 
 
 class RuleAdd(RequestModel):
-    kind: Literal["title_keyword", "location", "no_badge", "price_drop", "seller_nick", "price_anomaly"]
+    kind: Literal["item_id", "title_keyword", "location", "no_badge", "price_drop", "seller_nick", "price_anomaly"]
     value: str = Field(min_length=1, max_length=500)
     note: str = ""
 
