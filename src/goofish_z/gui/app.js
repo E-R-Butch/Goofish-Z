@@ -3,6 +3,8 @@
 const $ = id => document.getElementById(id);
 let currentJob = null;
 let pollTimer = null;
+let jobRevision = 0;
+let jobSubmitting = false;
 let searchState = null;
 let searchBusy = false;
 let filteredOpen = false;
@@ -339,62 +341,105 @@ function showRun(result) {
   }
 }
 
-async function pollJob(id) {
+function beginJobView() {
   clearTimeout(pollTimer);
+  pollTimer = null;
+  $('cancelJobButton').disabled = false;
+  return ++jobRevision;
+}
+
+function releaseJob() {
+  currentJob = null;
+  $('runAllButton').disabled = false;
+  $('cancelJobButton').hidden = true;
+  $('cancelJobButton').disabled = false;
+}
+
+async function pollJob(id, revision = beginJobView()) {
+  if (revision !== jobRevision) return;
   currentJob = id;
   $('runAllButton').disabled = true;
   $('cancelJobButton').hidden = false;
+  $('cancelJobButton').disabled = false;
   try {
     const job = await api(`/api/watch/jobs/${id}`);
+    if (revision !== jobRevision) return;
     if (job.result) {
       showRun(job.result);
-      currentJob = null;
-      $('runAllButton').disabled = false;
-      $('cancelJobButton').hidden = true;
+      releaseJob();
       await Promise.all([loadAlerts(), loadWatches()]);
       return;
     }
     const p = job.progress || {};
     const phase = p.phase === 'waiting' ? `等待搜索间隔，约 ${Math.ceil(p.retry_after)} 秒` : '检查中';
     $('runResult').textContent = `${job.cancel_requested ? '正在取消，等待当前请求结束' : phase} · ${p.completed || 0}/${p.total || 0} · ${p.keyword || ''}`;
-    pollTimer = setTimeout(() => pollJob(id), 1000);
+    pollTimer = setTimeout(() => { if (revision === jobRevision) pollJob(id); }, 1000);
   } catch (e) {
+    if (revision !== jobRevision) return;
+    if (e.status === 404) {
+      releaseJob();
+      message($('runResult'), '任务不存在，服务可能已重启或记录已过期。可刷新进度查看现有任务，或手动开始新一轮。', true);
+      return;
+    }
     message($('runResult'), `进度读取失败：${e.message}。可点击“刷新进度”重新连接。`, true);
   }
 }
 
 async function runAll() {
-  if ($('runAllButton').disabled) return;
+  if (jobSubmitting || $('runAllButton').disabled) return;
+  const revision = beginJobView();
+  jobSubmitting = true;
+  currentJob = null;
   $('runAllButton').disabled = true;
+  $('refreshJobButton').disabled = true;
+  $('cancelJobButton').hidden = true;
   try {
     const job = await api('/api/watch/jobs', {method: 'POST', body: JSON.stringify({all: true})});
-    await pollJob(job.id);
+    if (revision !== jobRevision) return;
+    jobSubmitting = false;
+    $('refreshJobButton').disabled = false;
+    await pollJob(job.id, revision);
   } catch (e) {
-    $('runAllButton').disabled = false;
+    if (revision !== jobRevision) return;
+    releaseJob();
     message($('runResult'), e.message, true);
+  } finally {
+    if (revision === jobRevision) {
+      jobSubmitting = false;
+      $('refreshJobButton').disabled = false;
+    }
   }
 }
 
 async function resumeJob() {
+  if (jobSubmitting) return;
+  const revision = beginJobView();
   try {
     const {jobs = []} = await api('/api/watch/jobs');
-    if (jobs[0]) await pollJob(jobs[0].id);
+    if (revision !== jobRevision) return;
+    if (jobs[0]) await pollJob(jobs[0].id, revision);
     else {
-      clearTimeout(pollTimer);
-      currentJob = null;
-      $('runAllButton').disabled = false;
-      $('cancelJobButton').hidden = true;
+      releaseJob();
       $('runResult').textContent = '暂无运行任务';
     }
-  } catch (e) { message($('runResult'), e.message, true); }
+  } catch (e) { if (revision === jobRevision) message($('runResult'), e.message, true); }
 }
 
 async function cancelJob() {
-  if (!currentJob) return;
+  const id = currentJob;
+  if (!id || $('cancelJobButton').disabled) return;
+  const revision = beginJobView();
+  $('cancelJobButton').disabled = true;
   try {
-    await api(`/api/watch/jobs/${currentJob}`, {method: 'DELETE'});
-    await pollJob(currentJob);
-  } catch (e) { message($('runResult'), e.message, true); }
+    await api(`/api/watch/jobs/${id}`, {method: 'DELETE'});
+    if (revision === jobRevision) await pollJob(id, revision);
+  } catch (e) {
+    if (revision !== jobRevision) return;
+    if (e.status === 404) releaseJob();
+    message($('runResult'), `取消请求未完成：${e.message}。可点击“刷新进度”确认任务状态。`, true);
+  } finally {
+    if (revision === jobRevision) $('cancelJobButton').disabled = false;
+  }
 }
 
 async function showHistory(id) {
