@@ -15,6 +15,13 @@
 新模块的独立采集窗口实际返回：淘宝 `login_required`、京东 `parse_failed`、
 拼多多 `login_required`。这些失败被真实保存和显示，没有补入示例价格或旧结果。
 拼多多新版列表没有普通商品链接，商品标识和登录后卡片解析仍需实测完善。
+进一步通过实际 CLI 诊断确认：京东页面 `ready_state=complete`，商品节点和价格节点
+均为 0，只出现普通「请登录」入口；不足以单凭这条提示断言必须登录，保留
+`parse_failed`，待有效登录态下继续验证。结构化诊断只包含节点数量和固定登录提示，
+不返回原始页面、账号信息或 Cookie。
+
+拼多多公开首页的服务端商品数据能对应到商品 ID、普通价格和拼单价；搜索及详情页
+仍要求登录。公开首页推荐没有替代用户指定关键词的搜索结果。
 
 ## 使用
 
@@ -24,9 +31,9 @@
 分享短链、非商品页面、自定义主机、端口和任意重定向地址会被拒绝。
 
 ```bash
-goofish-z price collect --query "RTX 5060 8G" --platforms "taobao,jd,pdd" --limit 20 --format json
-goofish-z price collect --query "RTX 5060 8G" --platforms jd --url "https://item.jd.com/100.html" --format json
-goofish-z price history --query "RTX 5060 8G" --limit 20 --format json
+goofish-z price collect "RTX 5060 8G" --platforms "taobao,jd,pdd" --limit 20 --format json
+goofish-z price collect "RTX 5060 8G" --platforms jd --url "https://item.jd.com/100.html" --format json
+goofish-z price history "RTX 5060 8G" --limit 20 --format json
 ```
 
 上例商品 ID `100` 是占位值，使用时替换成实际商品链接。
@@ -50,15 +57,15 @@ Content-Type: application/json
 用户可在自己 Chrome 登录后，明确选择单个平台导入：
 
 ```bash
-goofish-z price import-chrome --platform jd --format json
-goofish-z price import-chrome --platform taobao --format json
-goofish-z price import-chrome --platform pdd --format json
+goofish-z price import-chrome jd --format json
+goofish-z price import-chrome taobao --format json
+goofish-z price import-chrome pdd --format json
 ```
 
 也可选择独立采集窗口，手工登录后关闭该标签页：
 
 ```bash
-goofish-z price login --platform jd --timeout-seconds 300 --format json
+goofish-z price login jd --timeout-seconds 300 --format json
 ```
 
 代码不自动输入账号、密码、短信或处理验证码。导入成功不等于登录有效，

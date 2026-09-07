@@ -52,7 +52,7 @@ def collect(query: str, platforms: str = "taobao,jd,pdd", limit: int = 20, url: 
                     result.update(status="parse_failed", message="已识别商品，但没有解析到有效价格")
                 quotes.extend(collected)
             except CollectionError as exc:
-                result.update(status=exc.status, message=str(exc), retry_after=exc.retry_after)
+                result.update(status=exc.status, message=str(exc), retry_after=exc.retry_after, diagnostics=exc.diagnostics)
             except Exception:
                 # No raw page, URL parameters, cookies or exception locals in user output.
                 logger.warning("Price collection failed for {}", platform)

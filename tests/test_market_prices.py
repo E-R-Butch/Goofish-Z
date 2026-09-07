@@ -109,3 +109,26 @@ class MarketPricesTest(OfflineCase):
             self.assertEqual(client.get("/api/price/history",params={"q":"RTX5060 8G"}).json()["runs"][0]["id"],response.json()["id"])
             self.assertEqual(client.post("/api/price/collect",json={"query":"x","limit":0}).status_code,422)
             self.assertEqual(client.post("/api/price/import-chrome",json={"platform":"unrelated"}).status_code,422)
+
+    def test_documented_cli_collect_and_history_use_positional_keywords(self):
+        from typer.testing import CliRunner
+        from goofish_z.cli import app
+        with patch("goofish_z.prices.service.collect_page", AsyncMock(return_value={"items":[card()]})) as read:
+            run = CliRunner().invoke(app, ["price", "collect", "RTX5060 8G", "--platforms", "jd", "--format", "json"])
+            self.assertEqual(run.exit_code, 0, run.output)
+            saved = json.loads(run.stdout)
+            self.assertEqual(saved["quotes"][0]["price_low"], 2400)
+            read.assert_awaited_once_with("jd", "RTX5060 8G", 20, "")
+            previous = CliRunner().invoke(app, ["price", "history", "RTX5060 8G", "--format", "json"])
+            self.assertEqual(previous.exit_code, 0, previous.output)
+            self.assertEqual(json.loads(previous.stdout)["runs"][0]["id"], saved["id"])
+            self.assertEqual(read.await_count, 1)
+
+    def test_cli_failed_price_collection_has_nonzero_status_and_no_quotes(self):
+        from typer.testing import CliRunner
+        from goofish_z.cli import app
+        with patch("goofish_z.prices.service.collect_page", AsyncMock(side_effect=CollectionError("login_required", "synthetic login"))):
+            run = CliRunner().invoke(app, ["price", "collect", "RTX5060 8G", "--platforms", "jd", "--format", "json"])
+        self.assertEqual(run.exit_code, 1)
+        self.assertEqual(json.loads(run.stdout)["quotes"], [])
+        self.assertEqual(json.loads(run.stdout)["sources"][0]["status"], "login_required")

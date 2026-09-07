@@ -4,7 +4,7 @@
   const byId = id => document.getElementById(id);
   const names = {taobao:'淘宝／天猫',jd:'京东',pdd:'拼多多'};
   const kinds = {listed:'页面标价',conditional:'附条件价格',range:'区间／起步价',unknown:'价格未识别'};
-  const states = {ok:'采集完成',partial:'部分完成',login_required:'需要登录',verification_required:'需要安全验证',rate_limited:'采集间隔中',busy:'平台正忙',timeout:'加载超时',parse_failed:'解析未完成',source_mismatch:'来源不一致',failed:'采集失败'};
+  const states = {ok:'采集完成',partial:'部分完成',login_required:'需要登录',verification_required:'需要安全验证',rate_limited:'采集间隔中',busy:'平台正忙',timeout:'加载超时',parse_failed:'解析未完成',source_mismatch:'来源不一致',access_failed:'平台访问失败',failed:'采集失败'};
   let busy = false;
   function element(tag, content, cls) {
     const e = document.createElement(tag);
@@ -42,7 +42,7 @@
       card.append(element('strong',`${names[source.platform]} · ${states[source.status] || source.status}`),element('p',`${source.count} 条${source.retry_after?` · ${source.retry_after} 秒后可重试`:''}`));
       if(source.message) card.append(element('p',source.message));
       card.append(link('打开平台',source.login_url));
-      if(['login_required','verification_required','failed'].includes(source.status)) {
+      if(['login_required','verification_required','parse_failed','failed'].includes(source.status)) {
         const b=element('button','导入此平台 Chrome 登录态');b.type='button';
         b.addEventListener('click',async()=>{
           if(busy)return;

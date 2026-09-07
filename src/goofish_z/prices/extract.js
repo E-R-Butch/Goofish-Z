@@ -11,7 +11,8 @@
   const verification = /安全验证|拖动.*滑块|完成验证|访问过于频繁|访问受限|请完成下方验证/.test(body);
   const login = /\/login\.|passport\.jd\.com|login\.taobao\.com/.test(url.href) ||
     [...document.querySelectorAll('iframe')].some(e => visible(e) && /login\.taobao\.com|passport\.jd\.com/.test(e.src)) ||
-    /请先登录|登录后查看|登录后搜索|请重新登录/.test(body);
+    /请先登录|登录后查看|登录后搜索|请重新登录|登录后即可|登录查看更多|登录享低价/.test(body) ||
+    Boolean(one(document, 'input[type="password"], input[autocomplete="current-password"]')) && /登录/.test(body);
   const empty = /没有找到相关|未找到相关|暂无搜索结果|没有搜索到|抱歉，没有找到/.test(body);
   const items = [];
   const seen = new Set();
@@ -55,5 +56,12 @@
       add({url:href, title:clean(title), price_text:price(p), context:text(card), shop:''});
     }
   }
-  return {source_query:sourceQuery, source_url:url.origin + url.pathname, login, verification, empty, items};
+  const diagnostics = {
+    ready_state:document.readyState,
+    page_kind:/login|passport/.test(url.pathname + url.hostname)?'login':'content',
+    visible_product_nodes:[...document.querySelectorAll('[data-sku], [data-goods-id], a[href*="item.htm"], a[href*="goods_id="]')].filter(visible).length,
+    visible_price_nodes:[...document.querySelectorAll('[class*="price"], [class*="Price"]')].filter(visible).length,
+    login_signals:['密码登录','短信登录','扫码登录','请登录','立即登录','请先登录','登录后即可'].filter(s=>body.includes(s)),
+  };
+  return {source_query:sourceQuery, source_url:url.origin + url.pathname, login, verification, empty, items, diagnostics};
 }

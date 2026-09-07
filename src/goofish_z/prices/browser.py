@@ -18,9 +18,10 @@ EXTRACT = Path(__file__).with_name("extract.js").read_text()
 
 
 class CollectionError(Exception):
-    def __init__(self, status: str, message: str, retry_after: int = 0):
+    def __init__(self, status: str, message: str, retry_after: int = 0, diagnostics: dict | None = None):
         super().__init__(message)
         self.status, self.retry_after = status, retry_after
+        self.diagnostics = diagnostics or {}
 
 
 def profile_root(platform: str) -> Path:
@@ -60,6 +61,7 @@ async def market_page(platform: str, *, reserve: bool = True):
                 viewport={"width":1280,"height":900}, locale="zh-CN",
                 timeout=30000,
             )
+            imported = False
             try:
                 # Imported cookies are scoped to this platform and never printed.
                 cookies = root / "imported-cookies.json"
@@ -70,6 +72,7 @@ async def market_page(platform: str, *, reserve: bool = True):
                     if not isinstance(entries, list) or any(not cookie_allowed(platform, c) for c in entries):
                         raise CollectionError("failed", "平台登录态格式或域名不正确")
                     await context.add_cookies(entries)
+                    imported = True
                 page = await context.new_page()
                 async def navigation_gate(route):
                     request = route.request
@@ -81,7 +84,7 @@ async def market_page(platform: str, *, reserve: bool = True):
                 yield page
             finally:
                 await context.close()
-                if needs_import:
+                if imported:
                     applied.touch(mode=0o600)
     finally:
         lock.release()
@@ -142,7 +145,9 @@ async def collect_page(platform: str, query: str, limit: int, url: str = "") -> 
     target = product_url(platform, url)[0] if url else search_url(platform, query)
     try:
         async with market_page(platform) as page:
-            await page.goto(target, wait_until="domcontentloaded", timeout=30000)
+            response = await page.goto(target, wait_until="domcontentloaded", timeout=30000)
+            if response and response.status >= 400:
+                raise CollectionError("access_failed", f"平台页面返回 HTTP {response.status}，未获得价格")
             payload = None
             for _ in range(40):
                 try:
@@ -152,15 +157,19 @@ async def collect_page(platform: str, query: str, limit: int, url: str = "") -> 
                         raise
                     await page.wait_for_load_state("domcontentloaded", timeout=10000)
                     continue
+                diagnostics = payload.get("diagnostics", {})
                 if payload["verification"]:
-                    raise CollectionError("verification_required", f"{PLATFORMS[platform]}要求安全验证，请在浏览器处理后重新采集")
+                    raise CollectionError("verification_required", f"{PLATFORMS[platform]}要求安全验证，请在浏览器处理后重新采集", diagnostics=diagnostics)
                 if payload["login"]:
-                    raise CollectionError("login_required", f"{PLATFORMS[platform]}要求登录，请登录后导入该平台登录态")
+                    raise CollectionError("login_required", f"{PLATFORMS[platform]}要求登录，请登录后导入该平台登录态", diagnostics=diagnostics)
                 if payload["items"] or payload["empty"]:
                     break
                 await page.wait_for_timeout(500)
             if not payload or not payload["items"] and not payload["empty"]:
-                raise CollectionError("parse_failed", "页面未提供可识别的商品卡片，可能尚未加载或页面结构已变化")
+                diagnostics = (payload or {}).get("diagnostics", {})
+                if set(diagnostics.get("login_signals", [])).intersection({"密码登录", "短信登录", "扫码登录", "登录后即可"}) and not diagnostics.get("visible_product_nodes"):
+                    raise CollectionError("login_required", f"{PLATFORMS[platform]}显示登录入口且没有商品卡片，请先登录后重试", diagnostics=diagnostics)
+                raise CollectionError("parse_failed", "页面未提供可识别的商品卡片，可能尚未加载或页面结构已变化", diagnostics=diagnostics)
             if not url and payload["source_query"].strip() != query.strip():
                 raise CollectionError("source_mismatch", "页面关键词与本次采集不一致，已丢弃结果")
             if url and product_url(platform, page.url)[0] != target:
