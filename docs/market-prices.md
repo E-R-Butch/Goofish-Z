@@ -51,12 +51,6 @@ Content-Type: application/json
 `verification_required`、`rate_limited`、`timeout`、`parse_failed` 等状态。
 不自动重试登录、安全验证或解析失败，每个平台两次读取至少间隔 30 秒。
 
-商品卡片出现后会继续等待价格加载（最多 40 次检查，每次间隔 0.5 秒）。到达上限后，
-已识别但缺价的商品仍保留价格原文并标为 `unknown`；部分有价、部分缺价返回
-`partial`，全部缺价返回 `parse_failed`。平台结果的 `count` 是识别商品数，
-`priced_count` 是有效价格数，`missing_prices` 是缺价数；工作台分别展示前两者。
-这些计数在页面成功读取后提供，登录或访问失败时不假定已经识别到商品。
-
 ## 登录与私有数据
 
 采集使用系统 Chrome 的独立 profile，默认不读取日常 Chrome 登录态。
@@ -93,8 +87,6 @@ HTTP 的 `POST /api/price/import-chrome` 只接受单个 `platform`。工作台�
   保留拼单及优惠资格待确认说明。
 - `title_match` 仅表示标题相关；多个型号、多个容量、可能的整机或配件进入
   `uncertain`，明确不同型号／容量为 `mismatch`。它们不计入标题相关的价格统计。
-- 型号和容量比较统一 G/GB、TiS/Ti SUPER 及全角写法；品牌等其他搜索条件仍需匹配。
-  显卡查询中的电脑整机、游戏主机和水冷头保留为待确认，明确查询整机时按该查询判断。
 - 不假定搜索卡片价格对应某个已选 SKU。`specification_confirmed` 当前为 false；
   不声称同款最低价，也不把页面标价当作成交价。
 - 按平台和价格类型分别列出数量、最小值、最大值及中位数；区间组统计起价范围，

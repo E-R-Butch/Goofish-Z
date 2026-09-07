@@ -66,16 +66,11 @@ def parse_price(text: str) -> tuple[float | None, float | None, bool]:
 
 
 def match_title(query: str, title: str) -> tuple[str, list[str]]:
-    from goofish_z.blacklist import _extract_capacity, _GPU_MODEL_RE, extract_gpu_models
-
-    def canonical(value):
-        value = unicodedata.normalize("NFKC", value).lower()
-        return re.sub(r"(?<!\d)(\d+)\s*g(?:b)?(?![a-z])", r"\1gb", value)
+    from goofish_z.blacklist import _extract_capacity, extract_gpu_models
 
     def normalize(value):
-        return re.sub(r"[\s\-_]+", "", canonical(value))
+        return re.sub(r"[\s\-_]+", "", unicodedata.normalize("NFKC", value).lower())
 
-    query, title = canonical(query), canonical(title)
     requested = extract_gpu_models(query)
     actual = extract_gpu_models(title)
     reasons: list[str] = []
@@ -91,11 +86,11 @@ def match_title(query: str, title: str) -> tuple[str, list[str]]:
         reasons.append("标题包含多个容量，尚未确认标价对应的容量")
     # Specific GPU queries should not silently become whole-PC/accessory quotes.
     if requested and not re.search(r"主机|整机|笔记本|散热|配件|水冷|支架", query):
-        if re.search(r"主机|整机|组装机|笔记本|散热器|水冷头|显卡支架|空盒|无核心", title):
+        if re.search(r"台式.*主机|组装机|整套主机|笔记本|散热器|显卡支架|空盒|无核心", title):
             reasons.append("可能是整机或配件，需确认商品类型")
     remaining = query
     if requested:
-        remaining = _GPU_MODEL_RE.sub("", remaining)
+        remaining = re.sub(r"(?:RTX\s*)?[345]0[0-9]0\s*(?:SUPER|TI|D|S)?", "", remaining, flags=re.I)
     tokens = re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]+", remaining.lower())
     haystack = normalize(title)
     if any(normalize(token) not in haystack for token in tokens) or requested and not actual:

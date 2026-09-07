@@ -8,40 +8,6 @@ from goofish_z.prices.browser import CollectionError, collect_page, market_page,
 
 
 class MarketBrowserTest(OfflineCase):
-    def snapshot(self, prices, **changes):
-        return {"items": [{"title": "synthetic", "price_text": p} for p in prices],
-                "verification": False, "login": False, "empty": False,
-                "source_query": "synthetic", **changes}
-
-    def test_cards_wait_for_later_price_render(self):
-        skeleton = self.snapshot([""])
-        loaded = self.snapshot(["¥2400"])
-        page = self.page(skeleton)
-        page.evaluate.side_effect = [skeleton, loaded]
-        result = asyncio.run(collect_page("jd", "synthetic", 10))
-        self.assertEqual(result["items"][0]["price_text"], "¥2400")
-        self.assertEqual(page.evaluate.await_count, 2)
-
-    def test_partial_prices_wait_but_do_not_wait_forever(self):
-        partial = self.snapshot(["¥2400", "面议"])
-        page = self.page(partial)
-        result = asyncio.run(collect_page("jd", "synthetic", 10))
-        self.assertEqual(result, partial)
-        self.assertEqual(page.evaluate.await_count, 40)
-
-    def test_real_empty_result_finishes_without_price_wait(self):
-        empty = self.snapshot([], empty=True)
-        page = self.page(empty)
-        self.assertEqual(asyncio.run(collect_page("jd", "synthetic", 10)), empty)
-        page.wait_for_timeout.assert_not_awaited()
-
-    def test_login_during_price_loading_discards_skeleton(self):
-        page = self.page({})
-        page.evaluate.side_effect = [self.snapshot([""]), self.snapshot([], login=True)]
-        with self.assertRaises(CollectionError) as error:
-            asyncio.run(collect_page("jd", "synthetic", 10))
-        self.assertEqual(error.exception.status, "login_required")
-
     def page(self, payload, status=200):
         page = MagicMock()
         page.goto = AsyncMock(return_value=MagicMock(status=status))

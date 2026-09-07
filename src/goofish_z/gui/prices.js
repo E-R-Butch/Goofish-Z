@@ -39,7 +39,7 @@
     status(`${historic?'历史记录 · ':''}“${data.query}” · ${new Date(data.collected_at).toLocaleString('zh-CN')} · ${finished}`,data.status !== 'succeeded');
     for (const source of data.sources) {
       const card=element('div',null,'market-source');
-      card.append(element('strong',`${names[source.platform]} · ${states[source.status] || source.status}`),element('p',`识别 ${source.count} 条${source.priced_count==null?'':` · 有效价格 ${source.priced_count} 条`}${source.retry_after?` · ${source.retry_after} 秒后可重试`:''}`));
+      card.append(element('strong',`${names[source.platform]} · ${states[source.status] || source.status}`),element('p',`${source.count} 条${source.retry_after?` · ${source.retry_after} 秒后可重试`:''}`));
       if(source.message) card.append(element('p',source.message));
       card.append(link('打开平台',source.login_url));
       if(['login_required','verification_required','parse_failed','failed'].includes(source.status)) {
