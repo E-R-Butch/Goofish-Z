@@ -1,5 +1,7 @@
 # Goofish-Z
 
+> 项目边界：Goofish-Z 维护闲鱼工作台、搜索、商品、监控及 CLI/MCP/HTTP 接口。跨平台比价已拆为独立的 [PriceRadar](https://github.com/E-R-Butch/PriceRadar)；淘宝、京东、拼多多采价在该项目维护。旧 `feat/readonly-market-prices` 分支仅为拆分前历史，不是本项目后续开发入口。
+
 面向 PC 与 Agent 的闲鱼工具：通过 Web 监控台、CLI、MCP 和 HTTP API 使用同一套
 搜索、详情、监控与告警能力。
 
