@@ -17,7 +17,7 @@ from loguru import logger
 from goofish_z.core.registry import discover, iter_commands
 from goofish_z import __version__
 from goofish_z.core.errors import AuthRequiredError, GoofishError, NotFoundError, RateLimitedError, RiskControlError
-from goofish_z.api.models import RuleAdd, RuleRemove, SellerUnban, WatchAdd, WatchRun
+from goofish_z.api.models import PriceCollect, PriceImport, RuleAdd, RuleRemove, SellerUnban, WatchAdd, WatchRun
 from goofish_z.api.jobs import JobBusyError, WatchJobs
 
 @asynccontextmanager
@@ -103,6 +103,30 @@ def api_item_mine(
 ) -> JSONResponse:
     """列出当前账号发布的商品，默认只返回在售。"""
     return JSONResponse(_call_command("item.mine", {"status": status, "limit": limit}))
+
+
+@app.post("/api/price/collect")
+def api_price_collect(body: PriceCollect) -> JSONResponse:
+    return JSONResponse(_call_command("price.collect", body.model_dump()))
+
+
+@app.get("/api/price/history")
+def api_price_history(q: str = Query(..., min_length=1, max_length=200), limit: int = Query(20, ge=1, le=100)) -> JSONResponse:
+    return JSONResponse(_call_command("price.history", {"query":q,"limit":limit}))
+
+
+@app.post("/api/price/import-chrome")
+def api_price_import(body: PriceImport) -> JSONResponse:
+    from goofish_z.prices.browser import CollectionError, import_chrome
+    from filelock import Timeout as LockTimeout
+    try:
+        return JSONResponse(import_chrome(body.platform))
+    except CollectionError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except LockTimeout as exc:
+        raise HTTPException(409, "该平台正在采集，请结束后导入") from exc
+    except Exception as exc:
+        raise HTTPException(400, "无法读取 Chrome 登录态，请检查浏览器及系统钥匙串授权") from exc
 
 
 @app.get("/api/item/get")

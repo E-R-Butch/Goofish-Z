@@ -57,6 +57,19 @@
   .filtered-item-heading .price { min-width:0; flex-shrink:0; }
   .filtered-item-heading > :last-child { min-width:0; }
   .filtered-item ul { color:var(--warn); padding-left:18px; margin:6px 0 0; line-height:1.5; }
+  .price-module { margin-top:16px; }
+  .price-module .sub { line-height:1.6; margin:8px 0; }
+  .price-platforms { display:flex; flex-wrap:wrap; gap:16px; align-items:center; margin:12px 0; font-size:13px; }
+  .price-platforms label { display:flex; align-items:center; gap:6px; }
+  .market-sources { display:flex; flex-wrap:wrap; gap:10px; margin:12px 0; }
+  .market-source { flex:1 1 220px; border:1px solid var(--border); border-radius:6px; padding:12px; line-height:1.6; font-size:13px; }
+  .market-source a { color:var(--accent); text-decoration:underline; }
+  .market-source button { margin:8px 0 0 8px; }
+  .market-scroll { max-height:600px; overflow:auto; }
+  .market-scroll td { vertical-align:top; min-width:100px; }
+  .market-scroll td:nth-child(2) { min-width:220px; }
+  .market-scroll th { position:sticky; top:0; background:var(--panel); }
+  .market-run { margin:6px 6px 6px 0; }
   @media(max-width:600px) { body { padding:12px; } .filters { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 </style>
 </head>
@@ -123,11 +136,38 @@
     </div>
   </div>
 
+  <section class="card price-module" aria-labelledby="priceHeading">
+    <h3 id="priceHeading">🛒 电商价格采集与分析 · 只读</h3>
+    <p class="sub">采集淘宝、京东、拼多多的页面价格。优惠条件和规格待确认的条目会单独标注；不会下单、加购物车或领取优惠券。</p>
+    <form id="priceForm">
+      <div class="row">
+        <input id="priceQuery" aria-label="电商比价关键词" placeholder="型号和规格，如 RTX 5060 8G" required maxlength="200" style="flex:1">
+        <button class="primary" id="priceCollectButton">采集并分析</button>
+        <button type="button" id="priceHistoryButton">查看采集历史</button>
+      </div>
+      <div class="price-platforms">
+        <label><input type="checkbox" name="pricePlatform" value="taobao" checked>淘宝／天猫</label>
+        <label><input type="checkbox" name="pricePlatform" value="jd" checked>京东</label>
+        <label><input type="checkbox" name="pricePlatform" value="pdd" checked>拼多多</label>
+        <label>每个平台最多 <select id="priceLimit"><option>10</option><option selected>20</option><option>30</option><option>50</option></select> 条</label>
+      </div>
+      <details><summary>按商品链接采集</summary><p class="sub">仅选择对应的一个平台，粘贴完整商品详情链接，关键词用于判断比较范围。</p>
+        <input id="priceUrl" type="url" aria-label="电商商品详情链接" placeholder="可选：HTTPS 商品详情链接" style="width:100%">
+      </details>
+    </form>
+    <div id="priceStatus" role="status" aria-live="polite"></div>
+    <div id="priceSources" class="market-sources"></div>
+    <div id="priceRuns"></div>
+    <div id="priceAnalysis"></div>
+    <div id="priceQuotes" class="market-scroll"></div>
+  </section>
+
   <div class="card" style="margin-top:12px;">
     <h3>📈 价格历史 <span class="mono" id="histWatchLabel"></span></h3>
     <div id="history" style="max-height:300px; overflow-y:auto;"><div class="sub">选择监控项查看历史</div></div>
   </div>
 
 <script src="/static/app.js" defer></script>
+<script src="/static/prices.js" defer></script>
 </body>
 </html>

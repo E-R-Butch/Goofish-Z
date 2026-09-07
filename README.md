@@ -6,6 +6,10 @@
 当前优先维护 PC + Agent 使用体验。Android 客户端源码保留在 `app-android/`，
 APK 工作链迁移与进一步升级暂缓。
 
+电商价格模块正在开发：新增淘宝／天猫、京东、拼多多的只读采集、条件价格分析和
+本地历史入口。三个平台的登录后采集尚未完成现场验收，使用方法和明确的验证边界见
+[电商价格模块](docs/market-prices.md)。
+
 ## 0.2.0 更新
 
 - HTTP 监控通过工作线程执行；批量搜索按限流等待，登录失效或风控时停止本轮。
@@ -193,7 +197,7 @@ Cookie 内容，也不自动刷新登录态；其登录结果只是最近一次 
 ```bash
 .venv/bin/python -m pip install -e '.[test]'
 .venv/bin/python -m unittest discover -s tests -v
-node --test tests/gui.test.js
+node --test tests/*gui.test.js
 .venv/bin/python scripts/check_public_repo.py
 ```
 

@@ -39,3 +39,14 @@ class RuleRemove(RequestModel):
 
 class SellerUnban(RequestModel):
     seller_nick: str = Field(min_length=1)
+
+
+class PriceCollect(RequestModel):
+    query: str = Field(min_length=1, max_length=200)
+    platforms: str = "taobao,jd,pdd"
+    limit: int = Field(default=20, ge=1, le=50)
+    url: str = Field(default="", max_length=2000)
+
+
+class PriceImport(RequestModel):
+    platform: Literal["taobao", "jd", "pdd"]
