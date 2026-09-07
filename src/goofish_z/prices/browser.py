@@ -11,7 +11,7 @@ from pathlib import Path
 from filelock import FileLock, Timeout as LockTimeout
 
 from goofish_z.core.paths import runtime_data_dir
-from .models import PLATFORMS
+from .models import PLATFORMS, parse_price
 from .urls import DOMAINS, HOME, allowed_document, check_platform, product_url, search_url
 
 EXTRACT = Path(__file__).with_name("extract.js").read_text()
@@ -162,7 +162,12 @@ async def collect_page(platform: str, query: str, limit: int, url: str = "") -> 
                     raise CollectionError("verification_required", f"{PLATFORMS[platform]}要求安全验证，请在浏览器处理后重新采集", diagnostics=diagnostics)
                 if payload["login"]:
                     raise CollectionError("login_required", f"{PLATFORMS[platform]}要求登录，请登录后导入该平台登录态", diagnostics=diagnostics)
-                if payload["items"] or payload["empty"]:
+                # Cards often render before their prices. Keep the bounded wait
+                # until every observed card has a usable price, then preserve
+                # any still-unpriced cards for an honest partial result.
+                if payload["items"] and all(parse_price(item.get("price_text", ""))[0] is not None for item in payload["items"]):
+                    break
+                if payload["empty"] and not payload["items"]:
                     break
                 await page.wait_for_timeout(500)
             if not payload or not payload["items"] and not payload["empty"]:

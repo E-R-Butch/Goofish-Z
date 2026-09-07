@@ -55,3 +55,10 @@ test('login-required sources expose scoped opt-in import and cancel sends nothin
   const button=s.get('priceSources').children[0].children.find(e=>e.tagName==='BUTTON');
   await button.listeners.click();assert.equal(s.requests.length,1);assert.match(s.get('priceQuotes').textContent,/历史结果不会替代/);
 });
+test('partially priced cards show observed and usable price counts separately',async()=>{
+  const r=result('5060');r.status='partial';
+  Object.assign(r.sources[0],{status:'partial',count:2,priced_count:1,missing_prices:1,message:'1 条商品未解析到有效价格'});
+  const s=setup(async()=>r);s.get('priceQuery').value='5060';await s.submit();
+  assert.match(s.get('priceSources').textContent,/部分完成.*识别 2 条.*有效价格 1 条.*1 条商品未解析到有效价格/);
+  assert.match(s.get('priceStatus').textContent,/部分平台未完成/);
+});

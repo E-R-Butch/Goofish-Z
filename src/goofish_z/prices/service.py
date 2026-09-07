@@ -45,11 +45,17 @@ def collect(query: str, platforms: str = "taobao,jd,pdd", limit: int = 20, url: 
                         collected.append(make_quote(platform,item,query,observed_at))
                     except ValueError:
                         invalid += 1
-                result.update(status="partial" if invalid and collected else "parse_failed" if invalid else "ok",
-                              count=len(collected), skipped=invalid, collected_at=observed_at,
-                              message=f"{invalid} 条缺少可核实的标题或商品链接" if invalid else "")
-                if collected and not any(q.price_low is not None for q in collected):
-                    result.update(status="parse_failed", message="已识别商品，但没有解析到有效价格")
+                priced = sum(q.price_low is not None for q in collected)
+                missing = len(collected) - priced
+                messages = []
+                if invalid:
+                    messages.append(f"{invalid} 条缺少可核实的标题或商品链接")
+                if missing:
+                    messages.append(f"{missing} 条商品未解析到有效价格")
+                incomplete = invalid or missing
+                result.update(status="partial" if incomplete and priced else "parse_failed" if incomplete else "ok",
+                              count=len(collected), priced_count=priced, missing_prices=missing,
+                              skipped=invalid, collected_at=observed_at, message="；".join(messages))
                 quotes.extend(collected)
             except CollectionError as exc:
                 result.update(status=exc.status, message=str(exc), retry_after=exc.retry_after, diagnostics=exc.diagnostics)

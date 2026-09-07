@@ -17,6 +17,35 @@ def card(platform="jd", **changes):
 
 
 class MarketPricesTest(OfflineCase):
+    def test_equivalent_model_and_capacity_spellings_match_in_both_directions(self):
+        for first, second in [("RTX 4070 Ti SUPER 16G", "RTX4070 TiS 16GB"),
+                              ("RTX5060 8GB", "RTX5060 8G"),
+                              ("ＲＴＸ５０６０ ８ＧＢ", "RTX5060 8G")]:
+            for query, title in ((first, second), (second, first)):
+                with self.subTest(query=query, title=title):
+                    self.assertEqual(match_title(query, title)[0], "title_match")
+        self.assertEqual(match_title("RTX4070 Ti SUPER 16GB", "RTX4070 Ti 16G")[0], "mismatch")
+
+    def test_whole_computer_is_excluded_from_gpu_price_distribution(self):
+        for title in ("RTX5060 8G 电脑整机", "RTX5060 8G 游戏主机", "RTX5060 8G 水冷头"):
+            with self.subTest(title=title):
+                quote = make_quote("jd", card(title=title), "RTX5060 8G", "synthetic")
+                self.assertEqual(quote.match, "uncertain")
+                self.assertEqual(analyze([quote])["groups"], [])
+        self.assertEqual(match_title("RTX5060 8G 整机", "RTX5060 8G 电脑整机")[0], "title_match")
+
+    def test_mixed_missing_prices_report_partial_and_keep_unknown_observations(self):
+        payload = {"items": [card(), card(url="https://item.jd.com/101.html", price_text="面议")]}
+        with patch("goofish_z.prices.service.collect_page", AsyncMock(return_value=payload)):
+            result = collect("RTX5060 8G", "jd")
+        self.assertEqual(result["status"], "partial")
+        source = result["sources"][0]
+        self.assertEqual((source["count"], source["priced_count"], source["missing_prices"]), (2, 1, 1))
+        self.assertEqual(source["status"], "partial")
+        self.assertIn("1 条商品未解析到有效价格", source["message"])
+        self.assertEqual(result["quotes"][1]["price_kind"], "unknown")
+        self.assertEqual(history("RTX5060 8G")[0]["status"], "partial")
+
     def test_price_units_ranges_and_unknowns(self):
         for value, expected in [("¥ 1.45 万",(14500,14500,False)),("¥2,400",(2400,2400,False)),
                                 ("¥100-200",(100,200,True)),("¥99起",(99,None,True)),
