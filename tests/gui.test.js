@@ -551,8 +551,55 @@ test('a response for another keyword or page is rejected instead of relabelling 
     });
     document.getElementById('searchQ').value = '4080S';
     await context.doSearch();
-    assert.match(document.getElementById('searchStatus').textContent, /关键词或页码不一致/);
+    assert.match(document.getElementById('searchStatus').textContent, /关键词、页码或排序不一致/);
     assert.ok(!document.getElementById('searchResults').textContent.includes('synthetic stale result'));
     assert.equal(document.getElementById('searchNextButton').disabled, true);
+  }
+});
+
+test('native sort change resets the page and isolates old results while waiting', async () => {
+  let finish;
+  const {document, context} = await screen({
+    '/api/search?q=synthetic&limit=30&page=1': {items:[{title:'default old item'}],has_next:true},
+    '/api/search?q=synthetic&limit=30&page=1&sort=price_asc': () => new Promise(resolve=>{finish=resolve;}),
+  });
+  document.getElementById('searchQ').value='synthetic'; await context.doSearch();
+  document.getElementById('searchSort').value='price_desc';
+  document.getElementById('searchNativeSort').value='price_asc';
+  const pending=document.getElementById('searchNativeSort').listeners.change(); await tick();
+  assert.equal(document.getElementById('searchNativeSort').disabled,true);
+  assert.equal(document.getElementById('searchSort').value,'default');
+  assert.doesNotMatch(document.getElementById('searchResults').textContent,/default old item/);
+  finish({sort:'price_asc',items:[{title:'sorted new item'}]}); await pending;
+  assert.match(document.getElementById('searchResults').textContent,/闲鱼：价格从低到高.*sorted new item/);
+  assert.equal(document.getElementById('searchNativeSort').disabled,false);
+});
+
+test('native pagination and cache retain sort while local filters do not request again', async () => {
+  const {document,context,requests}=await screen({
+    '/api/search?q=synthetic&limit=30&page=1&sort=price_asc':{sort:'price_asc',items:[{title:'asc one',price:'10'}],has_next:true},
+    '/api/search?q=synthetic&limit=30&page=2&sort=price_asc':{sort:'price_asc',items:[{title:'asc two',price:'20'}],has_next:false},
+    '/api/search?q=synthetic&limit=30&page=1&sort=price_desc':{sort:'price_desc',items:[{title:'desc one',price:'100'}],has_next:false},
+  });
+  document.getElementById('searchQ').value='synthetic';document.getElementById('searchNativeSort').value='price_asc';
+  await context.doSearch();await context.changeSearchPage(2);await context.changeSearchPage(1);
+  document.getElementById('searchMin').value='5';context.renderSearch();context.resetSearchFilters();
+  assert.equal(requests.filter(([u])=>u.startsWith('/api/search?')).length,2);
+  assert.equal(document.getElementById('searchNativeSort').value,'price_asc');
+  document.getElementById('searchNativeSort').value='price_desc';await document.getElementById('searchNativeSort').listeners.change();
+  assert.match(document.getElementById('searchResults').textContent,/desc one/);
+  assert.doesNotMatch(document.getElementById('searchResults').textContent,/asc one/);
+  assert.equal(requests.filter(([u])=>u.startsWith('/api/search?')).length,3);
+});
+
+test('missing or mismatched native sort provenance is rejected', async () => {
+  for(const sort of [undefined,'default','price_desc']) {
+    const {context,document}=await screen({
+      '/api/search?q=synthetic&limit=30&page=1&sort=price_asc':{sort,items:[{title:'wrong order'}]},
+    });
+    document.getElementById('searchQ').value='synthetic';document.getElementById('searchNativeSort').value='price_asc';
+    await context.doSearch();
+    assert.match(document.getElementById('searchStatus').textContent,/排序不一致/);
+    assert.doesNotMatch(document.getElementById('searchResults').textContent,/wrong order/);
   }
 });

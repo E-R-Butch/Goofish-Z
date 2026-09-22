@@ -9,7 +9,8 @@ let searchState = null;
 let searchBusy = false;
 let filteredOpen = false;
 const searchCache = new Map();
-const searchCacheKey = (query, page) => JSON.stringify([query, page]);
+const nativeSortNames = {default: "综合", price_asc: "价格从低到高", price_desc: "价格从高到低", newest: "最新发布"};
+const searchCacheKey = (query, page, sort = "default") => JSON.stringify([query, page, sort]);
 
 function node(tag, text, className) {
   const element = document.createElement(tag);
@@ -136,6 +137,7 @@ function filteredDetails(items) {
 function updateSearchControls() {
   $('searchButton').disabled = searchBusy;
   $('searchQ').disabled = searchBusy;
+  $('searchNativeSort').disabled = searchBusy;
   $('searchPrevButton').disabled = searchBusy || !searchState || searchState.page <= 1;
   $('searchNextButton').disabled = searchBusy || !searchState?.result.has_next;
   $('searchPageLabel').textContent = searchState ?
@@ -145,7 +147,7 @@ function updateSearchControls() {
 function renderSearch() {
   if (!searchState || searchBusy) return;
   updateSearchControls();
-  const {result, query, page} = searchState;
+  const {result, query, page, sort: nativeSort = "default"} = searchState;
   const min = $('searchMin').value.trim() === '' ? null : Number($('searchMin').value);
   const max = $('searchMax').value.trim() === '' ? null : Number($('searchMax').value);
   if ([min, max].some(n => n != null && (!Number.isFinite(n) || n < 0)) ||
@@ -183,7 +185,7 @@ function renderSearch() {
   ];
   const box = $('searchResults');
   const summary = node('div', null, 'search-summary');
-  summary.append(node('p', `“${query}” · 第 ${page} 页 · 显示 ${items.length} / ${result.items?.length || 0} 条 · 自动过滤 ${result.filtered_count || 0} 条 · 屏蔽 ${result.blocked_count || 0} 条` +
+  summary.append(node('p', `“${query}” · 闲鱼：${nativeSortNames[nativeSort]} · 第 ${page} 页 · 显示 ${items.length} / ${result.items?.length || 0} 条 · 自动过滤 ${result.filtered_count || 0} 条 · 屏蔽 ${result.blocked_count || 0} 条` +
     (hidden.length ? ` · 条件筛选 ${hidden.length} 条` : ''), 'sub'));
   const expanded = filteredOpen && Boolean(excluded.length);
   const trash = action(`🗑 已过滤 ${excluded.length} 条${excluded.length ? ` · ${expanded ? '收起' : '查看原因'}` : ''}`, toggleFilteredResults);
@@ -236,12 +238,12 @@ async function searchWithCooldown(path, query) {
 async function doSearch() {
   const query = $('searchQ').value.trim();
   if (!query || searchBusy) return;
-  return fetchSearchPage(query, 1, true);
+  return fetchSearchPage(query, 1, true, $('searchNativeSort').value || "default");
 }
 
 async function changeSearchPage(page) {
   if (!searchState || searchBusy || page < 1) return;
-  const key = searchCacheKey(searchState.query, page);
+  const key = searchCacheKey(searchState.query, page, searchState.sort);
   if (searchCache.has(key)) {
     filteredOpen = false;
     $('searchStatus').replaceChildren();
@@ -249,10 +251,10 @@ async function changeSearchPage(page) {
     renderSearch();
     return;
   }
-  return fetchSearchPage(searchState.query, page, false);
+  return fetchSearchPage(searchState.query, page, false, searchState.sort);
 }
 
-async function fetchSearchPage(query, page, fresh) {
+async function fetchSearchPage(query, page, fresh, sort = "default") {
   // 新搜索从提交时起就与旧关键词隔离，包括失败和限流等待期间。
   if (fresh) {
     searchState = null;
@@ -265,13 +267,14 @@ async function fetchSearchPage(query, page, fresh) {
   $('searchButton').textContent = '搜索中…';
   message($('searchResults'), `正在检索“${query}”第 ${page} 页…翻页也会等待搜索间隔。`);
   try {
-    const result = await searchWithCooldown(`/api/search?q=${encodeURIComponent(query)}&limit=30&page=${page}`, query);
-    if (result.query !== query || result.page !== page) {
-      throw new Error('搜索响应的关键词或页码不一致，已丢弃结果，请重新搜索。');
+    const ordering = sort === 'default' ? '' : `&sort=${encodeURIComponent(sort)}`;
+    const result = await searchWithCooldown(`/api/search?q=${encodeURIComponent(query)}&limit=30&page=${page}${ordering}`, query);
+    if (result.query !== query || result.page !== page || (result.sort || 'default') !== sort) {
+      throw new Error('搜索响应的关键词、页码或排序不一致，已丢弃结果，请重新搜索。');
     }
-    searchCache.set(searchCacheKey(query, page), result);
+    searchCache.set(searchCacheKey(query, page, sort), result);
     filteredOpen = false;
-    searchState = {query, page, result};
+    searchState = {query, page, sort, result};
     searchBusy = false;
     renderSearch();
   } catch (e) {
@@ -481,6 +484,11 @@ $('searchNextButton').addEventListener('click', () => changeSearchPage(searchSta
 $('resetFiltersButton').addEventListener('click', resetSearchFilters);
 for (const id of ['searchMin', 'searchMax', 'searchLocation', 'searchInclude', 'searchExclude']) $(id).addEventListener('input', renderSearch);
 $('searchSort').addEventListener('change', renderSearch);
+$('searchNativeSort').addEventListener('change', () => {
+  if (searchBusy) return;
+  $('searchSort').value = 'default';
+  return doSearch();
+});
 $('addWatchButton').addEventListener('click', addWatch);
 $('watchQ').addEventListener('keydown', e => { if (e.key === 'Enter') addWatch(); });
 $('runAllButton').addEventListener('click', runAll);
