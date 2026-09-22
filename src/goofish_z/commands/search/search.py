@@ -261,6 +261,31 @@ def _filtered_item(item: dict[str, Any], reasons: list[str]) -> dict[str, Any]:
     return {**{key: item[key] for key in fields if key in item}, "reasons": reasons}
 
 
+def filter_search_items(query: str, items: list[dict[str, Any]]) -> tuple[list[dict], list[dict]]:
+    """Pure classification shared by browser results and regression replays."""
+    from goofish_z.blacklist import extract_generation, is_broken_stick, is_noise
+    from goofish_z.search_quality import capacity_reasons, listing_reasons, model_reasons
+
+    passed, excluded = [], []
+    required_generation = extract_generation(query)
+    for item in items:
+        noise = is_noise(item, query)
+        reasons = [noise] if noise else []
+        reasons.extend(listing_reasons(query, item))
+        reasons.extend(capacity_reasons(query, str(item.get("title", ""))))
+        reasons.extend(model_reasons(query, item))
+        generation = extract_generation(str(item.get("title", "")))
+        if required_generation and generation and generation != required_generation:
+            reasons.append(f"搜索{required_generation}但商品是{generation}")
+        if reasons:
+            excluded.append(_filtered_item(item, list(dict.fromkeys(reasons))))
+        else:
+            if required_generation and generation == required_generation and is_broken_stick(item):
+                item = {**item, "_broken_stick": True}
+            passed.append(item)
+    return passed, excluded
+
+
 @command(
     namespace="search",
     name="items",
@@ -282,74 +307,7 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int
     fetched = asyncio.run(_run(str(query).strip(), _normalize_limit(limit), page))
     items = fetched["items"]
     fetched_count = len(items)
-    excluded: list[dict[str, Any]] = []
-
-    # 噪音过滤（UNIVERSAL 硬规则）：收购帖过滤——买家是来买东西的，
-    # 不是看收购广告的。任何搜索都必须过滤（用户明确要求）。
-    from goofish_z.blacklist import is_noise
-
-    clean = []
-    for it in items:
-        noise = is_noise(it)
-        if noise:
-            it["_noise"] = noise
-            excluded.append(_filtered_item(it, [noise]))
-        else:
-            clean.append(it)
-    items = clean
-
-    # 容量校验：query 含容量（如 32G）时，过滤搜索结果里的异容量污染
-    # （闲鱼模糊搜索会把 16G 混进 32G 的结果——2026-08-08 实测 20 条里 3 条污染）
-    from goofish_z.blacklist import (
-        _extract_capacity,
-        capacity_matches,
-        extract_generation,
-        extract_gpu_models,
-        is_broken_stick,
-    )
-
-    req_cap = _extract_capacity(str(query))
-    if req_cap:
-        filtered = []
-        for it in items:
-            if capacity_matches(str(it.get("title", "")), req_cap):
-                filtered.append(it)
-            else:
-                it["_cap_mismatch"] = f"搜索{req_cap}G但商品容量不匹配"
-                excluded.append(_filtered_item(it, [it["_cap_mismatch"]]))
-        items = filtered
-
-    # 保留完整型号后缀；多型号混售含目标型号时仍相关，无型号信息时不猜测。
-    req_models = extract_gpu_models(str(query))
-    if req_models:
-        filtered = []
-        for it in items:
-            models = extract_gpu_models(str(it.get("title", "")))
-            if not models or req_models.intersection(models):
-                filtered.append(it)
-            else:
-                reason = f"型号不匹配：搜索 {' / '.join(sorted(req_models))}，标题型号为 {' / '.join(sorted(models))}"
-                excluded.append(_filtered_item(it, [reason]))
-        items = filtered
-
-    # 代数校验：query 含 DDRx 时，代数不匹配的过滤（DDR4 混进 DDR3 搜索）。
-    # 例外：坏条/报废条且价格极低（练手/拆件价值）保留——DDR3 坏条 ¥10 有人买。
-    req_gen = extract_generation(str(query))
-    if req_gen:
-        filtered = []
-        for it in items:
-            gen = extract_generation(str(it.get("title", "")))
-            if gen is None or gen == req_gen:
-                # 代数匹配（或无信息不误杀）。匹配的坏条打标供展示，不参与过滤
-                if gen == req_gen and is_broken_stick(it):
-                    it["_broken_stick"] = True
-                filtered.append(it)
-            else:
-                # 代数不匹配。DDR3 搜索里混进的 DDR4 一律过滤——
-                # 即使标了坏条/报废（买家要的是 DDR3，DDR4 坏条无练手价值）。
-                it["_gen_mismatch"] = f"搜索{req_gen}但商品是{gen}"
-                excluded.append(_filtered_item(it, [it["_gen_mismatch"]]))
-        items = filtered
+    items, excluded = filter_search_items(str(query).strip(), items)
     result: dict[str, Any] = {
         **fetched, "items": items, "count": len(items),
         "filtered_count": fetched_count - len(items),

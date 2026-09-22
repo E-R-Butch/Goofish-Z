@@ -19,6 +19,7 @@ import json
 import re
 import sqlite3
 import time
+import unicodedata
 from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
@@ -152,11 +153,24 @@ def _to_float(v: Any) -> float | None:
 
 # 中文也属于 Unicode 的 \w，不能用 \b 判断「48G涡轮」的单位结尾。
 _CAPACITY_RE = re.compile(r"(?<![\d.])(\d{1,4})\s*(?:GB|G)(?![A-Za-z0-9])", re.IGNORECASE)
+_CAPACITY_LIST_RE = re.compile(r"(?<![\d.])((?:\d{1,4}\s*[/、]\s*)+\d{1,4})\s*(?:GB|G)(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+def normalize_search_text(value: Any) -> str:
+    return unicodedata.normalize("NFKC", str(value or "")).replace("\u200b", "")
+
+
+def extract_capacities(title: str) -> set[int]:
+    text = normalize_search_text(title)
+    capacities = {int(m[1]) for m in _CAPACITY_RE.finditer(text)}
+    for match in _CAPACITY_LIST_RE.finditer(text):
+        capacities.update(int(n) for n in re.findall(r"\d+", match[1]))
+    return capacities
 
 
 def _extract_capacity(title: str) -> int | None:
     """从标题提取容量（GB）。16G/32G/64G → 16/32/64。"""
-    m = _CAPACITY_RE.search(str(title or ""))
+    m = _CAPACITY_RE.search(normalize_search_text(title))
     if not m:
         return None
     try:
@@ -176,12 +190,7 @@ def capacity_matches(title: str, required_cap: int | None) -> bool:
     """
     if required_cap is None:
         return True
-    caps = set()
-    for m in _CAPACITY_RE.finditer(str(title or "")):
-        try:
-            caps.add(int(m.group(1)))
-        except ValueError:
-            pass
+    caps = extract_capacities(title)
     if not caps:
         return True  # 无容量信息，不误杀
     if required_cap in caps:
@@ -190,10 +199,12 @@ def capacity_matches(title: str, required_cap: int | None) -> bool:
 
 
 _GPU_MODEL_RE = re.compile(
-    r"(?<!\d)(?:RTX\s*)?((?:30|40|50)[5-9]0)\s*"
+    r"(?<!\d)(?:(?:RTX|GTX)[\s-]*)?((?:10|20|30|40|50)[5-9]0|16[56]0)[\s-]*"
     r"(?:(D|TI(?:\s*(?:SUPER|S))?|SUPER|S)(?![A-Z]))?(?![A-Z0-9])",
     re.IGNORECASE,
 )
+_CMP_MODEL_RE = re.compile(r"(?<!\d)(?:CMP[\s-]*)?(\d{2,3})[\s-]*HX(?![A-Z])", re.I)
+_RX_MODEL_RE = re.compile(r"(?<![A-Z0-9])RX[\s-]*(\d{3,4})[\s-]*(?:(XTX|XT|GRE)(?![A-Z]))?(?![A-Z0-9])", re.I)
 
 
 def extract_gpu_models(text: str) -> set[str]:
@@ -202,10 +213,14 @@ def extract_gpu_models(text: str) -> set[str]:
         normalized = re.sub(r"\s+", "", value).upper()
         return {"S": "SUPER", "TIS": "TISUPER"}.get(normalized, normalized)
 
-    return {
-        "RTX" + match.group(1) + suffix(match.group(2) or "")
-        for match in _GPU_MODEL_RE.finditer(str(text or ""))
+    text = normalize_search_text(text)
+    models = {
+        ("GTX" if match[1].startswith(("10", "16")) else "RTX") + match[1] + suffix(match[2] or "")
+        for match in _GPU_MODEL_RE.finditer(text)
     }
+    models.update("CMP" + m[1] + "HX" for m in _CMP_MODEL_RE.finditer(text))
+    models.update("RX" + m[1] + (m[2] or "").upper() for m in _RX_MODEL_RE.finditer(text))
+    return models
 
 
 _GENERATION_RE = re.compile(r"(DDR\d)", re.IGNORECASE)
@@ -241,13 +256,15 @@ def is_buying_post(title: str) -> bool:
     - 含「收收收」（烦躁式收购）
     - 含「回收」（回收 IC/芯片/呆料广告）
     """
-    t = str(title or "").strip()
+    t = normalize_search_text(title).strip()
+    t = re.sub(r"(?:不是|不做|不|非)(?:求购|回收|收购)", "", t)
+    t = re.sub(r"(?:回收|收购)(?:勿扰|免扰|别来)", "", t)
     if not t:
         return False
     # 开头即「收」——闲鱼收购帖的典型格式（"收XXX"）
     if t.startswith("收"):
         # 排除"收藏"、"收获"等正常词开头
-        if not t.startswith(("收藏", "收获", "收到")):
+        if not t.startswith(("收藏", "收获", "收到", "收纳", "收音", "收银", "收割")):
             return True
     # 求购意图词
     for kw in ("诚收", "求购", "大量收", "高价收", "收收收", "回收", "上门收"):
@@ -256,14 +273,16 @@ def is_buying_post(title: str) -> bool:
     return False
 
 
-def is_noise(item: dict[str, Any]) -> str | None:
+def is_noise(item: dict[str, Any], query: str = "") -> str | None:
     """检测商品是否为通用噪音（收购帖/回收广告/驱动教程/整机）。返回噪音类型或 None。"""
-    title = str(item.get("title", ""))
+    title = normalize_search_text(item.get("title", ""))
     # 收购帖是 UNIVERSAL 硬规则——买家是来买东西的，不是看收购广告的
     if is_buying_post(title):
         return "收购帖"
     # 驱动教程（用户明确要求过滤）：魔改驱动/自动发货教程——不是硬件本身
-    if "驱动" in title and ("教程" in title or "自动发货" in title):
+    from goofish_z.search_quality import offering_text, wants_service
+    offering = offering_text(title)
+    if not wants_service(query) and "驱动" in offering and ("教程" in offering or "自动发货" in offering):
         return "驱动教程"
     # 整机/主机【不】过滤——网吧倒闭/搬家急出等整机打包常有捡漏（用户明确要求保留）
     return None
