@@ -239,6 +239,16 @@ test('unsafe URL schemes never become clickable links', async () => {
   assert.equal(context.itemLink({title: 'synthetic', url: 'https://example.invalid'}).rel, 'noopener noreferrer');
 });
 
+test('low-price observations are shown as text without hiding the listing', async () => {
+  const {context, document} = await screen({
+    '/api/search?q=synthetic&limit=30&page=1': {items: [{title: 'synthetic cheap card', price: '1', _price_flag: '<b>低价，需核实</b>'}]},
+  });
+  document.getElementById('searchQ').value = 'synthetic';
+  await context.doSearch();
+  assert.match(document.getElementById('searchResults').textContent, /synthetic cheap card/);
+  assert.match(document.getElementById('searchResults').textContent, /<b>低价，需核实<\/b>/);
+});
+
 test('errors render literally and release the search button', async () => {
   const detail = '<svg onload="synthetic()">';
   const {context, document} = await screen({
