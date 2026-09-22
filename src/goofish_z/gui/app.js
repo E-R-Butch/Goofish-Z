@@ -79,6 +79,7 @@ function itemTable(items, history = false) {
   for (const item of items) {
     const row = node('tr');
     const price = node('td', priceLabel(item), 'price');
+    if (item._price_flag) price.append(node('div', item._price_flag, 'sub'));
     if (item.price_text && /[万千]/.test(item.price_text)) {
       price.append(node('div', `页面标价 ${item.price_text}`, 'price-source'));
     }
