@@ -46,7 +46,7 @@ async function screen(overrides = {}) {
     clearTimeout: id => timers.delete(id), setInterval() {},
     fetch: async (url, options) => {
       requests.push([url, options]);
-      let value = await (typeof responses[url] === 'function' ? responses[url]() : responses[url]);
+      let value = await (typeof responses[url] === 'function' ? responses[url](options) : responses[url]);
       if (value === undefined) throw new Error(`Unexpected test request: ${url}`);
       const status = value.testStatus || (value.testError ? 400 : 200);
       if (url.startsWith('/api/search?') && status < 400) {
@@ -74,6 +74,150 @@ async function screen(overrides = {}) {
   await new Promise(setImmediate);
   return {context, document, requests, advance};
 }
+
+const settledJob = {id: 'synthetic-job', result: {status: 'succeeded', succeeded: 1, results: []}};
+const runningJob = {id: 'synthetic-job', status: 'running', progress: {completed: 0, total: 1}};
+const tick = () => new Promise(setImmediate);
+
+test('late polling response cannot revive a completed monitor', async () => {
+  let finish, calls = 0;
+  const path = '/api/watch/jobs/synthetic-job';
+  const {context, document, advance} = await screen({
+    [path]: () => ++calls === 1 ? new Promise(resolve => { finish = resolve; }) : settledJob,
+  });
+  const oldPoll = context.pollJob('synthetic-job'); await tick();
+  await context.pollJob('synthetic-job');
+  finish(runningJob); await oldPoll; await advance(2000);
+  assert.equal(calls, 2);
+  assert.match(document.getElementById('runResult').textContent, /完成/);
+  assert.equal(document.getElementById('runAllButton').disabled, false);
+  assert.equal(document.getElementById('cancelJobButton').hidden, true);
+});
+
+test('stale job list cannot clear a newer selected monitor', async () => {
+  let finish, lists = 0;
+  const {context, document} = await screen({
+    '/api/watch/jobs': () => ++lists === 1 ? {jobs: []} : new Promise(resolve => { finish = resolve; }),
+    '/api/watch/jobs/synthetic-job': runningJob,
+  });
+  const refresh = context.resumeJob(); await tick();
+  await context.pollJob('synthetic-job');
+  finish({jobs: []}); await refresh;
+  assert.equal(document.getElementById('runAllButton').disabled, true);
+  assert.equal(document.getElementById('cancelJobButton').hidden, false);
+  assert.match(document.getElementById('runResult').textContent, /检查中/);
+});
+
+test('missing monitor after service restart releases controls without resubmission', async () => {
+  const {context, document, requests, advance} = await screen({
+    '/api/watch/jobs/synthetic-job': {testStatus: 404, detail: '任务不存在'},
+  });
+  await context.pollJob('synthetic-job'); await advance(5000);
+  assert.equal(document.getElementById('runAllButton').disabled, false);
+  assert.equal(document.getElementById('cancelJobButton').hidden, true);
+  assert.match(document.getElementById('runResult').textContent, /任务不存在/);
+  assert.ok(!requests.some(([,options]) => options.method === 'POST'));
+});
+
+test('temporary progress error retains the task and cancellation control', async () => {
+  const {context, document} = await screen({
+    '/api/watch/jobs/synthetic-job': {testStatus: 503, detail: '暂时无法读取'},
+  });
+  await context.pollJob('synthetic-job');
+  assert.equal(document.getElementById('runAllButton').disabled, true);
+  assert.equal(document.getElementById('cancelJobButton').hidden, false);
+  assert.match(document.getElementById('runResult').textContent, /刷新进度/);
+});
+
+test('cancel keeps its captured task when an older poll finishes during deletion', async () => {
+  let finishPoll, finishCancel, reads = 0;
+  const {context, document, requests} = await screen({
+    '/api/watch/jobs/synthetic-job': options => options.method === 'DELETE'
+      ? new Promise(resolve => { finishCancel = resolve; })
+      : ++reads === 1 ? new Promise(resolve => { finishPoll = resolve; }) : settledJob,
+  });
+  const poll = context.pollJob('synthetic-job'); await tick();
+  const cancel = context.cancelJob(); await tick();
+  finishPoll(settledJob); await poll;
+  finishCancel({cancel_requested: true}); await cancel;
+  assert.ok(!requests.some(([url]) => url.endsWith('/null')));
+  assert.equal(reads, 2);
+  assert.equal(document.getElementById('runAllButton').disabled, false);
+  assert.match(document.getElementById('runResult').textContent, /完成/);
+});
+
+test('initial job lookup cannot overwrite a newly submitted monitor', async () => {
+  let finish;
+  const {context, document, requests} = await screen({
+    '/api/watch/jobs': options => options.method === 'POST' ? runningJob : new Promise(resolve => { finish = resolve; }),
+    '/api/watch/jobs/synthetic-job': runningJob,
+  });
+  await context.runAll(); finish({jobs: []}); await tick();
+  assert.equal(document.getElementById('runAllButton').disabled, true);
+  assert.match(document.getElementById('runResult').textContent, /检查中/);
+  assert.equal(requests.filter(([,options]) => options.method === 'POST').length, 1);
+});
+
+test('submission suppresses duplicate starts and premature refreshes but then unlocks refresh', async () => {
+  let finish;
+  const {context, document, requests} = await screen({
+    '/api/watch/jobs': options => options.method === 'POST' ? new Promise(resolve => { finish = resolve; }) : {jobs: []},
+    '/api/watch/jobs/synthetic-job': runningJob,
+  });
+  const start = context.runAll(); await tick();
+  await context.runAll(); await context.resumeJob();
+  assert.equal(document.getElementById('refreshJobButton').disabled, true);
+  assert.equal(requests.filter(([url]) => url === '/api/watch/jobs').length, 2);
+  finish(runningJob); await start;
+  assert.equal(document.getElementById('refreshJobButton').disabled, false);
+  assert.equal(requests.filter(([,options]) => options.method === 'POST').length, 1);
+});
+
+test('late errors cannot replace a newer successful progress view', async () => {
+  let finish, reads = 0;
+  const {context, document} = await screen({
+    '/api/watch/jobs/synthetic-job': () => ++reads === 1 ? new Promise(resolve => { finish = resolve; }) : settledJob,
+  });
+  const old = context.pollJob('synthetic-job'); await tick();
+  await context.pollJob('synthetic-job');
+  finish({testStatus: 404, detail: 'synthetic obsolete failure'}); await old;
+  assert.match(document.getElementById('runResult').textContent, /完成/);
+  assert.doesNotMatch(document.getElementById('runResult').textContent, /任务不存在|failure/);
+});
+
+test('failed refresh during cancellation leaves cancellation available', async () => {
+  let finish, lists = 0;
+  const {context, document} = await screen({
+    '/api/watch/jobs': () => ++lists === 1 ? {jobs: []} : {testStatus: 503, detail: 'synthetic disconnected'},
+    '/api/watch/jobs/synthetic-job': options => options.method === 'DELETE' ? new Promise(resolve => { finish = resolve; }) : runningJob,
+  });
+  await context.pollJob('synthetic-job');
+  const cancel = context.cancelJob(); await tick();
+  await context.resumeJob();
+  finish({cancel_requested: true}); await cancel;
+  assert.equal(document.getElementById('cancelJobButton').disabled, false);
+  assert.equal(document.getElementById('runAllButton').disabled, true);
+  assert.match(document.getElementById('runResult').textContent, /disconnected/);
+});
+
+test('old submission cleanup cannot unlock refresh during a newer submission', async () => {
+  let finishOldPoll, finishNewStart, starts = 0, reads = 0;
+  const {context, document} = await screen({
+    '/api/watch/jobs': options => options.method !== 'POST' ? {jobs: []}
+      : ++starts === 1 ? runningJob : new Promise(resolve => { finishNewStart = resolve; }),
+    '/api/watch/jobs/synthetic-job': options => options.method === 'DELETE' ? {cancel_requested: true}
+      : ++reads === 1 ? new Promise(resolve => { finishOldPoll = resolve; }) : settledJob,
+  });
+  const oldStart = context.runAll(); await tick();
+  await context.cancelJob();
+  const newStart = context.runAll(); await tick();
+  finishOldPoll(settledJob); await oldStart;
+  assert.equal(document.getElementById('refreshJobButton').disabled, true);
+  await context.resumeJob();
+  assert.equal(document.getElementById('runAllButton').disabled, true);
+  finishNewStart(runningJob); await newStart;
+  assert.equal(starts, 2);
+});
 
 test('listing and keyword markup remains literal text', async () => {
   const text = '<img src=x onerror="syntheticExecuted=true">';
