@@ -71,6 +71,15 @@
         <input id="searchQ" placeholder="关键词，如 DDR3 RECC 32G" style="flex:1">
         <button class="primary" id="searchButton">搜索</button>
       </div>
+      <label class="sub" style="display:block; margin-bottom:12px;">闲鱼原生排序
+        <select id="searchNativeSort">
+          <option value="default">综合</option>
+          <option value="price_asc">价格从低到高</option>
+          <option value="price_desc">价格从高到低</option>
+          <option value="newest">最新发布</option>
+        </select>
+        <span>切换后重新搜索，排序与翻页均需等待搜索间隔。</span>
+      </label>
       <div class="filter-heading">
         <span class="sub">筛选当前页 · 即时生效</span>
         <button id="resetFiltersButton">清空筛选</button>
@@ -82,8 +91,8 @@
         <label>地区<input id="searchLocation" placeholder="如 上海"></label>
         <label>标题包含（全部匹配）<input id="searchInclude" placeholder="多个词用空格分隔"></label>
         <label>标题排除（任一匹配）<input id="searchExclude" placeholder="如 回收 配件"></label>
-        <label>排序<select id="searchSort">
-          <option value="default">闲鱼默认顺序</option>
+        <label>当前页排序<select id="searchSort">
+          <option value="default">保留闲鱼返回顺序</option>
           <option value="price_asc">价格从低到高</option>
           <option value="price_desc">价格从高到低</option>
         </select></label>

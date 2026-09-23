@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import inspect
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -90,9 +90,13 @@ def api_search(
     q: str = Query(..., description="搜索关键词"),
     limit: int = Query(20, ge=1, le=50),
     page: int = Query(1, ge=1, le=50),
+    sort: Literal["default", "price_asc", "price_desc", "newest"] = Query("default", description="闲鱼原生排序"),
 ) -> JSONResponse:
     """搜索闲鱼商品。"""
-    result = _call_command("search.items", {"query": q, "limit": limit, "page": page})
+    params = {"query": q, "limit": limit, "page": page}
+    if sort != "default":
+        params["sort"] = sort
+    result = _call_command("search.items", params)
     return JSONResponse(result)
 
 

@@ -18,6 +18,9 @@ from goofish_z.core import Strategy, command
 from goofish_z.core.browser import auto_scroll, goofish_page
 from goofish_z.core.errors import AuthRequiredError, GoofishError
 from goofish_z.core.price import normalize_price
+from goofish_z.core.search_sort import (
+    observe_sorted_action, select_native_sort, validate_sort, verify_sorted_items,
+)
 
 MAX_LIMIT = 50
 MAX_PAGE = 50
@@ -118,6 +121,13 @@ _EXTRACT_JS = r"""
   return {
     requiresAuth, blocked, empty, items, bodyPreview: bodyText.slice(0, 500),
     source_query: new URL(window.location.href).searchParams.get('q') || '',
+    source_sort: (() => {
+      const labels = [...document.querySelectorAll('span[class*="search-select-title--"]')].map(e => (e.textContent || '').trim());
+      if (labels.includes('价格从低到高')) return 'price_asc';
+      if (labels.includes('价格从高到低')) return 'price_desc';
+      if (labels.includes('最新')) return 'newest';
+      return labels.includes('综合') ? 'default' : null;
+    })(),
     page: Number(activePage?.textContent) || 1,
     has_next: Boolean(next && !next.disabled),
     source_count: document.querySelectorAll(sel.card).length,
@@ -141,7 +151,7 @@ async def _wait_for_page_slot() -> None:
         rate_check("search")
 
 
-async def _go_to_page(page: Any, number: int) -> None:
+async def _go_to_page(page: Any, number: int, query: str = "", sort: str = "default") -> list[str] | None:
     """Use the site's observed page picker; never bypass a login overlay."""
     from playwright.async_api import TimeoutError as BrowserTimeout
 
@@ -156,6 +166,11 @@ async def _go_to_page(page: Any, number: int) -> None:
     )
     await picker.fill(str(number))
     await _wait_for_page_slot()
+    if sort != "default":
+        return await observe_sorted_action(
+            page, lambda: page.locator('[class*="search-pagination-to-page-confirm-button"]').click(timeout=5000),
+            query, sort, number,
+        )
     try:
         await page.locator('[class*="search-pagination-to-page-confirm-button"]').click(timeout=5000)
         await page.wait_for_function(
@@ -173,7 +188,7 @@ async def _go_to_page(page: Any, number: int) -> None:
         raise GoofishError("闲鱼翻页未完成，请稍后重试；未将旧页当成新结果") from error
 
 
-async def _run(query: str, limit: int, page_number: int = 1) -> dict[str, Any]:
+async def _run(query: str, limit: int, page_number: int = 1, sort: str = "default") -> dict[str, Any]:
     from playwright.async_api import TimeoutError as BrowserTimeout
 
     url = _build_search_url(query)
@@ -184,18 +199,26 @@ async def _run(query: str, limit: int, page_number: int = 1) -> dict[str, Any]:
             raise GoofishError("闲鱼搜索页打开超时，本次搜索未完成，请重试") from error
         payload = await _read_search_page(page, limit)
         _check_payload(payload, query)
+        if sort != "default":
+            ids = await select_native_sort(page, query, sort, _wait_for_page_slot)
+            payload = await _read_search_page(page, limit)
+            _check_payload(payload, query)
+            verify_sorted_items(payload, ids, sort)
         if page_number > 1:
             if not payload.get("has_next"):
                 raise GoofishError("没有更多搜索结果")
-            await _go_to_page(page, page_number)
+            ids = await _go_to_page(page, page_number, query, sort)
             payload = await _read_search_page(page, limit)
             _check_payload(payload, query)
+            if sort != "default":
+                verify_sorted_items(payload, ids, sort)
             if payload.get("page") != page_number:
                 raise GoofishError("闲鱼返回的页码不匹配，请重新搜索")
 
     items = payload.get("items") or []
     return {
         "query": query,
+        "sort": sort,
         "items": [
             {**it, **normalize_price(it.get("price")),
              "rank": i + 1, "item_id": _item_id_from_url(it.get("url", ""))}
@@ -289,11 +312,11 @@ def filter_search_items(query: str, items: list[dict[str, Any]]) -> tuple[list[d
 @command(
     namespace="search",
     name="items",
-    description="按页搜索闲鱼商品（浏览器路径，limit 为当前页条数上限，page 为页码）",
+    description="按页搜索闲鱼商品；sort: default=综合、price_asc=价格升序、price_desc=价格降序、newest=最新发布（闲鱼原生排序）",
     strategy=Strategy.COOKIE,
     columns=["rank", "item_id", "title", "price", "condition", "brand", "location", "badge", "url"],
 )
-def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int = 1) -> dict[str, Any]:
+def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int = 1, sort: str = "default") -> dict[str, Any]:
     # 限流：搜索间隔 30s（防接口级风控）
     from goofish_z.core.limiter import check as rate_check
     from goofish_z.core.guard import check as guard_check
@@ -302,14 +325,16 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int
         raise ValueError("搜索关键词不能为空")
     if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= MAX_PAGE:
         raise ValueError(f"页码必须是 1 到 {MAX_PAGE} 的整数")
+    validate_sort(sort)
     guard_check()
     rate_check("search")
-    fetched = asyncio.run(_run(str(query).strip(), _normalize_limit(limit), page))
+    args = (str(query).strip(), _normalize_limit(limit), page)
+    fetched = asyncio.run(_run(*args, sort=sort) if sort != "default" else _run(*args))
     items = fetched["items"]
     fetched_count = len(items)
     items, excluded = filter_search_items(str(query).strip(), items)
     result: dict[str, Any] = {
-        **fetched, "items": items, "count": len(items),
+        **fetched, "sort": sort, "items": items, "count": len(items),
         "filtered_count": fetched_count - len(items),
         "filtered": excluded,
     }

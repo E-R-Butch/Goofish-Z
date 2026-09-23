@@ -23,6 +23,14 @@ _SERVICE = re.compile(
 _PART = r"(?:外壳|空壳|空盒|包装盒|散热器|散热模组|风扇|水冷头|背板|支架|挡板|延长线|转接线)"
 _PART_ONLY = re.compile(r"(?:仅售|只售|只卖|单卖|单出|只有)\s*" + _PART + r"|" + _PART + r"\s*(?:单卖|单出|不含显卡|无显卡)")
 _PART_OFFER = re.compile(r"显卡支架|显卡延长线|显卡转接线|水冷头|空壳|空盒|包装盒")
+_BARE_CARD = re.compile(
+    r"(?:无|没有|没|缺少)(?:GPU)?核心(?!故障|损伤|问题|损坏)"
+    r"|(?:无|没有|没)显存(?!故障|损伤|问题|损坏)"
+    r"|核心[、，\s/]*(?:显存)?(?:均无|没了|已拆)"
+    r"|芯片没了.{0,12}(?:报废|无维修价值)"
+    r"|料板|料版|显卡模型|模型显卡", re.I,
+)
+_PART_QUERY = re.compile(_PART + r"|PCB|料板|料版|模型|无核心|拆件", re.I)
 _PRICE_DISCLAIMER = re.compile(
     r"(?:标价|价格|售价)(?:为|是|仅为|只是|仅是)?\s*(?:定金|订金|押金|占位|引流|非实价)"
     r"|(?:仅|只)(?:收|拍|付|售)\s*(?:定金|订金|押金)"
@@ -60,13 +68,17 @@ def listing_reasons(query: str, item: dict[str, Any]) -> list[str]:
     if not wants_service(query) and _SERVICE.search(offering):
         reasons.append("服务条目：标题提供上门、维修、安装、代工或租赁")
     models = extract_gpu_models(query)
-    parts = re.sub(r"(?:附赠|赠送|附送|送|附带|带|含|自带|配有)(?:原装|全新|金属)?\s*" + _PART, "", offering)
+    parts = re.sub(r"(?:附赠|赠送|附送|送|附带|带|含|自带|配有|配备|采用)(?:原装|全新|金属)?\s*" + _PART, "", offering)
     parts = re.sub(r"(?:无|没|没有|缺少|不含|不带)(?:原装)?\s*" + _PART, "", parts)
     physical_card = re.search(r"显卡|图形卡", title) and (
         extract_capacities(title) or re.search(r"成色|功能正常|无拆|自用|拆机", title)
     )
-    if models and not re.search(_PART, query) and (_PART_ONLY.search(offering) or (_PART_OFFER.search(parts) and not physical_card)):
+    cooler = re.search(r"(?:显卡散热器|[a-z0-9][\w\s+/-]{0,20}散热器)(?!换新|已换|更换)", parts, re.I)
+    if models and not _PART_QUERY.search(query) and (_PART_ONLY.search(offering) or cooler or (_PART_OFFER.search(parts) and not physical_card)):
         reasons.append("配件条目：标题明确只售配件，不是完整显卡")
+    bare = re.sub(r"(?:不是|并非)无核心", "", title)
+    if models and not _PART_QUERY.search(query) and _BARE_CARD.search(bare):
+        reasons.append("不完整显卡：标题说明缺核心／显存、料板或模型")
     return reasons
 
 

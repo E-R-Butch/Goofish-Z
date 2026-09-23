@@ -205,6 +205,7 @@ _GPU_MODEL_RE = re.compile(
 )
 _CMP_MODEL_RE = re.compile(r"(?<!\d)(?:CMP[\s-]*)?(\d{2,3})[\s-]*HX(?![A-Z])", re.I)
 _RX_MODEL_RE = re.compile(r"(?<![A-Z0-9])RX[\s-]*(\d{3,4})[\s-]*(?:(XTX|XT|GRE)(?![A-Z]))?(?![A-Z0-9])", re.I)
+_GT_MODEL_RE = re.compile(r"(?<![A-Z0-9])GT[\s-]*(\d{3,4})(?![A-Z0-9])", re.I)
 
 
 def extract_gpu_models(text: str) -> set[str]:
@@ -220,6 +221,7 @@ def extract_gpu_models(text: str) -> set[str]:
     }
     models.update("CMP" + m[1] + "HX" for m in _CMP_MODEL_RE.finditer(text))
     models.update("RX" + m[1] + (m[2] or "").upper() for m in _RX_MODEL_RE.finditer(text))
+    models.update("GT" + m[1] for m in _GT_MODEL_RE.finditer(text))
     return models
 
 
