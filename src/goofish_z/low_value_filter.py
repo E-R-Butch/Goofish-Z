@@ -31,9 +31,11 @@ PAT_VIRTUAL_SERVICE = re.compile(
     re.IGNORECASE,
 )
 
-# 显卡周边零配件 (风扇/支架/散热模组/水冷头)
+# 显卡周边零配件 (风扇/支架/散热模组/水冷头/延长套件/料板)
 PAT_ACCESSORY_GPU = re.compile(
-    r"(?:散热(?:风扇|器|模组|套件)|风扇支架|水冷头|改水冷|显卡伴侣|显卡支架|背板|挡板|空盒|包装盒|转接线|延长线|导热贴|铜片)",
+    r"(?:散热(?:风扇|器|模组|套件)|风扇支架|水冷头|一体水冷|改水冷|显卡伴侣|显卡支架|背板|挡板|空盒|包装盒|"
+    r"转接线|延长线|延长套件|转接套件|转接板|转接卡|降温神器|降温插件|导热贴|铜片|"
+    r"显卡风扇|无芯片|无显存|剩下的pcb)",
     re.IGNORECASE,
 )
 
@@ -98,15 +100,16 @@ class LowValueClassifier:
         text = f"{title} {desc}"
 
         raw_p = item.get("price")
-        price = 0.0
-        if raw_p:
+        price: float | None = None
+        if raw_p is not None:
             clean_p = re.sub(r"[^\d.]", "", str(raw_p))
-            try:
-                price = float(clean_p)
-            except ValueError:
-                pass
+            if clean_p:
+                try:
+                    price = float(clean_p)
+                except ValueError:
+                    price = None
 
-        effective_price = price
+        effective_price: float | None = price
         reasons: list[str] = []
         tags: list[str] = []
 
@@ -129,17 +132,19 @@ class LowValueClassifier:
                     break
 
             if matched_sku:
-                real_sku_price = float(matched_sku.get("price", price))
-                if real_sku_price > price:
+                fallback_p = price if price is not None else 0.0
+                real_sku_price = float(matched_sku.get("price", fallback_p))
+                if price is not None and real_sku_price > price:
                     effective_price = real_sku_price
                     tags.append(f"多SKU真实到手价:¥{real_sku_price:.0f}({matched_sku.get('name')})")
                     reasons.append(f"多SKU引流陷阱: 列表标¥{price:.0f}实为低配，目标规格实际到手价为¥{real_sku_price:.0f}")
 
         if PAT_UNIT_PRICE_TRAP.search(text):
             if any(k in text for k in ("32G", "32g", "16gx2", "16G*2", "16x2", "套条", "套装", "共32g", "共32G")):
-                effective_price = price * 2.0
-                tags.append(f"单根引流(实际¥{effective_price:.0f})")
-                reasons.append("标价为单件/单根虚假引流")
+                if price is not None:
+                    effective_price = price * 2.0
+                    tags.append(f"单根引流(实际¥{effective_price:.0f})")
+                    reasons.append("标价为单件/单根虚假引流")
             elif any(k in text for k in ("出货", "一共", "200", "批量")):
                 tags.append("批量单张标价")
 
@@ -148,7 +153,7 @@ class LowValueClassifier:
         physical_adjustments = 0.0
 
         # 绝对物理改装项 (实战铁律: 补了就是补满到 x16，基准约 ¥40，换硅脂追加 ¥10)
-        if any(k in text for k in ("补好电容", "已补电容", "补过电容", "可补好电容")) and price >= 300.0:
+        if any(k in text for k in ("补好电容", "已补电容", "补过电容", "可补好电容")) and (price is not None and price >= 300.0):
             mod_val = 40.0
             mod_notes = ["满血x16"]
             m_cost = re.search(r"(?:加|花|收|费用|补电容)[¥￥]?(\d{2})(?:元)?(?:可?补|焊)?", text)
@@ -246,7 +251,7 @@ class LowValueClassifier:
                 or any(f"{c}G" in text.upper() for c in (8, 10, 11, 12, 16, 20, 24, 48))
             )
             if not is_hardware_card:
-                if price <= 300 or not any(k in text for k in ("成色", "单卡", "整卡", "箱说")):
+                if (price is not None and price <= 300) or not any(k in text for k in ("成色", "单卡", "整卡", "箱说")):
                     reasons.append("虚拟服务/驱动教程/代刷脚本(非整卡硬件)")
                     fair_value = 0.0
 
@@ -260,11 +265,11 @@ class LowValueClassifier:
                 fair_value = 0.0
 
         if not wants_parts(query) and PAT_ACCESSORY_GPU.search(title):
-            if price < 250 and not any(k in text for k in ("带卡", "整卡", "原装显卡")):
+            if (price is not None and price < 250) and not any(k in text for k in ("带卡", "整卡", "原装显卡")):
                 reasons.append("周边配件/散热器/风扇(非整卡硬件)")
                 fair_value = 0.0
 
-        if price <= 10.0 and base >= 500.0:
+        if price is not None and price <= 10.0 and base >= 500.0:
             reasons.append(f"超低价引流定金贴(标价¥{price:.0f}远低于基准¥{base:.0f})")
             fair_value = 0.0
 
@@ -287,7 +292,13 @@ class LowValueClassifier:
         fair_value += physical_adjustments
         fair_value = max(0.0, fair_value)
 
-        vmi = (fair_value / effective_price) if effective_price > 0 else 0.0
+        if effective_price is not None and effective_price > 0:
+            vmi = fair_value / effective_price
+        else:
+            vmi = 1.0
+            if effective_price is None:
+                tags.append("价格面议/待议")
+
         is_low_value = False
 
         if reasons:
@@ -303,7 +314,7 @@ class LowValueClassifier:
             score=round(1.0 / (vmi + 0.01), 2),
             reasons=reasons,
             tags=tags,
-            effective_price=round(effective_price, 2),
+            effective_price=round(effective_price, 2) if effective_price is not None else 0.0,
             fair_value=round(fair_value, 2),
             vmi=round(vmi, 2),
         )

@@ -146,8 +146,10 @@ def _load_or_bootstrap_cookies(path: Path) -> dict[str, str]:
             # Expired identity is only an account guard, never a usable credential.
             raw = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(raw, list):
-                identity = [dict(c, expires=-1) for c in raw if c.get("name") == "unb"]
-                cached_account = goofish_cookie_values(identity).get("unb")
+                for c in raw:
+                    if isinstance(c, dict) and c.get("name") == "unb" and c.get("value"):
+                        cached_account = str(c.get("value"))
+                        break
             elif isinstance(raw, dict):
                 cached_account = raw.get("unb")
         except (AuthRequiredError, json.JSONDecodeError):

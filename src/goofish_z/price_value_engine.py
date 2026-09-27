@@ -30,22 +30,17 @@ PAT_VIRTUAL_SERVICE = re.compile(
     re.IGNORECASE,
 )
 
-# 纯外壳 / 散热套件 / 延长线 / 拆件无核心料板
+# 纯外壳 / 散热套件 / 延长线 / 拆件无核心料板 / 显卡周边零配件
 PAT_ACCESSORY_GPU = re.compile(
-    r"(?:显卡风扇|散热器|散热套件|水冷头|一体水冷|显卡支架|显卡背板|风扇支架|显卡延长线|延长套件|降温插件|降温神器|无芯片|无显存|剩下的pcb)",
+    r"(?:散热(?:风扇|器|模组|套件)|风扇支架|水冷头|一体水冷|改水冷|显卡伴侣|显卡支架|背板|挡板|空盒|包装盒|"
+    r"转接线|延长线|延长套件|转接套件|转接板|转接卡|降温神器|降温插件|导热贴|铜片|"
+    r"显卡风扇|无芯片|无显存|剩下的pcb)",
     re.IGNORECASE,
 )
 
 # 搜显卡单卡时整机混淆引流
 PAT_HOST_MACHINE = re.compile(
     r"(?:台式主机|游戏备用机|电脑主机|台式电脑整机|海景房台式主机|高端主机|AI\\s*主机)",
-    re.IGNORECASE,
-)
-
-# 显卡周边零配件 (风扇/支架/散热模组/水冷头/延长套件)
-PAT_ACCESSORY_GPU = re.compile(
-    r"(?:散热(?:风扇|器|模组|套件)|风扇支架|水冷头|改水冷|显卡伴侣|显卡支架|背板|挡板|空盒|包装盒|"
-    r"转接线|延长线|延长套件|转接套件|转接板|转接卡|降温神器|降温插件|导热贴|铜片)",
     re.IGNORECASE,
 )
 
@@ -153,15 +148,16 @@ class PriceValueEngine:
         text = f"{title} {desc}"
 
         raw_p = item.get("price")
-        price = 0.0
-        if raw_p:
+        price: float | None = None
+        if raw_p is not None:
             clean_p = re.sub(r"[^\d.]", "", str(raw_p))
-            try:
-                price = float(clean_p)
-            except ValueError:
-                pass
+            if clean_p:
+                try:
+                    price = float(clean_p)
+                except ValueError:
+                    price = None
 
-        effective_price = price
+        effective_price: float | None = price
         reasons = []
         tags = []
 
@@ -175,21 +171,23 @@ class PriceValueEngine:
         if has_multi_sku:
             for s in skus:
                 spec_name = s.get("name") or s.get("spec") or ""
-                if "20G" in self.query.upper() and "20G" in spec_name.upper():
+                if "20G" in active_query.upper() and "20G" in spec_name.upper():
                     matched_sku = s
                     break
 
             if matched_sku:
-                real_sku_price = float(matched_sku.get("price", price))
-                if real_sku_price > price:
+                fallback_p = price if price is not None else 0.0
+                real_sku_price = float(matched_sku.get("price", fallback_p))
+                if price is not None and real_sku_price > price:
                     effective_price = real_sku_price
                     tags.append(f"多SKU真实到手价:¥{real_sku_price:.0f}({matched_sku.get('name')})")
                     reasons.append(f"多SKU引流陷阱: 列表标¥{price:.0f}实为低配，目标20G实际到手价为¥{real_sku_price:.0f}")
 
         if PAT_UNIT_PRICE_TRAP.search(text):
             if any(k in text for k in ("32G", "32g", "16gx2", "16G*2", "16x2", "套条", "套装", "共32g", "共32G")):
-                effective_price = price * 2.0
-                tags.append(f"单根引流(实际¥{effective_price:.0f})")
+                if price is not None:
+                    effective_price = price * 2.0
+                    tags.append(f"单根引流(实际¥{effective_price:.0f})")
             elif any(k in text for k in ("出货", "一共", "200", "批量")):
                 tags.append("批量单张标价")
 
@@ -223,7 +221,7 @@ class PriceValueEngine:
                 escalate_reason = "多SKU规格复杂，交由LLM精准对齐真实目标价格"
 
             # 存疑条件 B: 价格异常偏低(低于中位数78%)且在硬件区间(>=500)，疑似大漏或精妙话术陷阱
-            elif 500.0 <= effective_price < base * 0.78:
+            elif effective_price is not None and 500.0 <= effective_price < base * 0.78:
                 escalate = True
                 escalate_reason = f"深水高性价比捡漏(标价¥{effective_price:.0f}远低于大盘¥{base:.0f})，LLM防伪与暗病复核"
 
@@ -234,17 +232,28 @@ class PriceValueEngine:
 
             if escalate:
                 logger.info(f"触发 JEV 极简仲裁 [{escalate_reason}]: {title[:30]}")
-                verdict = self.arbiter.judge_jev(item=item, query=self.query, baseline_price=base)
+                verdict = self.arbiter.judge_jev(item=item, query=active_query, baseline_price=base)
                 if verdict is not None:
+                    verdict_is_blocked = verdict.is_blocked
+                    verdict_reasons = list(verdict.reasons)
                     verdict_tags = list(verdict.tags)
                     verdict_tags.append("JEV极简仲裁")
+
+                    # 本地确定性致命锁与霸王条款兜底检查 (绝不让带ID锁或恶意霸王条款漏网)
+                    if PAT_ICLOUD_LOCKED.search(text):
+                        verdict_is_blocked = True
+                        verdict_reasons.append("激活锁死/不可用砖头机(带ID锁)")
+                    if PAT_ABUSIVE_TERMS.search(text):
+                        verdict_is_blocked = True
+                        verdict_reasons.append("高危扣款霸王条款")
+
                     return ValueAssessment(
                         effective_price=verdict.effective_price,
                         fair_value=verdict.fair_market_value,
                         vmi=verdict.vmi,
-                        tier=verdict.tier,
-                        is_blocked=verdict.is_blocked,
-                        reasons=verdict.reasons,
+                        tier="BLOCKED_SPECIAL" if verdict_is_blocked else verdict.tier,
+                        is_blocked=verdict_is_blocked,
+                        reasons=verdict_reasons,
                         tags=verdict_tags,
                     )
 
@@ -261,7 +270,7 @@ class PriceValueEngine:
 
         # ---------------- 绝对物理工序/物料项 (智能动态评估工序价值，告别写死值) ----------------
         # 补电容智能估值 (主要针对 90HX 等矿卡改装)
-        if any(k in text for k in ("补好电容", "已补电容", "补过电容", "可补好电容")) and price >= 300.0:
+        if any(k in text for k in ("补好电容", "已补电容", "补过电容", "可补好电容")) and (price is not None and price >= 300.0):
             mod_val = 40.0
             mod_notes = ["满血x16"]
             m_cost = re.search(r"(?:加|花|收|费用|补电容)[¥￥]?(\d{2})(?:元)?(?:可?补|焊)?", text)
@@ -328,14 +337,14 @@ class PriceValueEngine:
 
         # 负向折损 (合理折价预期)
         # 严重致命故障 / 尸体卡 (不通电/核心坏/上机冰凉，仅剩料板拆颗粒残值 ~15%)
-        if PAT_FATAL_DEFECT.search(text):
+        if PAT_FATAL_DEFECT.search(clean_defect_text):
             fair_value *= 0.15
             tags.append("严重硬件故障/料板尸体")
-            if price > base * 0.25:
+            if price is not None and price > base * 0.25:
                 reasons.append(f"严重致命故障(不通电/尸体卡)，但标价¥{price:.0f}远超料板残值")
 
         # 无故障声明却虚标超低引流价 (如声称功能完好无拆修却标333，远低于大盘残值)
-        if price < base * 0.45 and not PAT_FATAL_DEFECT.search(text) and not PAT_STRICT_NO_RETAIL.search(text):
+        if price is not None and price < base * 0.45 and not PAT_FATAL_DEFECT.search(clean_defect_text) and not PAT_STRICT_NO_RETAIL.search(text):
             if any(k in text for k in ("功能完好", "包测试", "成色美丽", "无拆无修", "正常使用")):
                 reasons.append(f"虚标低价/定金引流贴(声称完好却标¥{price:.0f}远低于市场行情¥{base:.0f})")
                 fair_value = 0.0
@@ -412,7 +421,7 @@ class PriceValueEngine:
                 or any(f"{c}G" in text.upper() for c in (8, 10, 11, 12, 16, 20, 24, 48))
             )
             if not is_hardware_card:
-                if price <= 300 or not any(k in text for k in ("成色", "单卡", "整卡", "箱说")):
+                if (price is not None and price <= 300) or not any(k in text for k in ("成色", "单卡", "整卡", "箱说")):
                     reasons.append("虚拟服务/驱动教程/飞行表/代工焊(非整卡硬件)")
                     fair_value = 0.0
 
@@ -427,23 +436,23 @@ class PriceValueEngine:
 
         # 配件混淆 (显卡风扇/支架/散热套件混进整卡搜索)
         if not wants_parts(active_query) and PAT_ACCESSORY_GPU.search(title):
-            if price < 250 and not any(k in text for k in ("带卡", "整卡", "原装显卡")):
+            if (price is not None and price < 250) and not any(k in text for k in ("带卡", "整卡", "原装显卡")):
                 reasons.append("周边配件/散热器/风扇(非整卡硬件)")
                 fair_value = 0.0
 
         # 极端超低价引流陷阱 (如标 1 元、9.9 元、19 元求带价来谈/定金/小配件)
-        if price <= 50.0 and base >= 500.0:
+        if price is not None and price <= 50.0 and base >= 500.0:
             reasons.append(f"超低价引流定金贴(标价¥{price:.0f}远低于基准¥{base:.0f})")
             fair_value = 0.0
 
         # 搜显卡单卡时整机混入引流
-        if PAT_HOST_MACHINE.search(title) and any(k in self.query.upper() for k in ("HX", "3080", "3090", "显卡")):
+        if PAT_HOST_MACHINE.search(title) and any(k in active_query.upper() for k in ("HX", "3080", "3090", "显卡")):
             reasons.append("整机/台式电脑混入显卡单卡搜索")
             fair_value = 0.0
 
         # 型号降级混淆判定 (如搜 90HX 出 70HX/50HX/40HX/30HX/1660)
-        if self.query:
-            q_clean = self.query.upper().replace(" ", "")
+        if active_query:
+            q_clean = active_query.upper().replace(" ", "")
             if "90HX" in q_clean and not re.search(r"90\s*HX", title, re.IGNORECASE):
                 for other in ("70HX", "50HX", "40HX", "30HX", "20HX", "10HX", "1660", "1080", "2060", "2070", "1070", "1060"):
                     if other in title.upper():
@@ -455,10 +464,13 @@ class PriceValueEngine:
         fair_value += physical_adjustments
         fair_value = max(0.0, fair_value)
 
-        if effective_price <= 0:
-            vmi = 0.0
-        else:
+        if effective_price is not None and effective_price > 0:
             vmi = fair_value / effective_price
+        else:
+            # 面议或未知价格：不确定实际标价，默认中性 VMI=1.0，不因无标价而判定为零价值拦截
+            vmi = 1.0
+            if effective_price is None:
+                tags.append("价格面议/待议")
 
         # 分层判定
         is_blocked = False
@@ -477,7 +489,7 @@ class PriceValueEngine:
             reasons.append(f"价格与价值严重不匹配(真实价值估约¥{fair_value:.0f}，实际标价¥{effective_price:.0f}，VMI={vmi:.2f})")
 
         return ValueAssessment(
-            effective_price=effective_price,
+            effective_price=effective_price or 0.0,
             fair_value=fair_value,
             vmi=vmi,
             tier=tier,

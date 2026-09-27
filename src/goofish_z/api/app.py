@@ -92,6 +92,8 @@ def api_search(
     page: int = Query(1, ge=1, le=50),
     sort: Literal["default", "price_asc", "price_desc", "newest"] = Query("default", description="闲鱼原生排序"),
     filter_low_value: bool = Query(True, description="是否过滤低价值与虚假引流套路商品"),
+    min_price: float | None = Query(None, ge=0, description="最低价格过滤"),
+    max_price: float | None = Query(None, ge=0, description="最高价格过滤"),
 ) -> JSONResponse:
     """搜索闲鱼商品。"""
     params = {"query": q, "limit": limit, "page": page}
@@ -99,6 +101,10 @@ def api_search(
         params["sort"] = sort
     if not filter_low_value:
         params["filter_low_value"] = False
+    if min_price is not None:
+        params["min_price"] = min_price
+    if max_price is not None:
+        params["max_price"] = max_price
     result = _call_command("search.items", params)
     return JSONResponse(result)
 
