@@ -83,6 +83,33 @@ class TestLowValueClassifier(unittest.TestCase):
         res = self.clf.evaluate(item, query="RTX 4090")
         self.assertFalse(res.is_low_value)
 
+    def test_negated_fatal_defect_not_blocked(self):
+        # 声明“无黑屏无花屏”属于完好保证，绝不能误判为致命暗病
+        item = {"title": "RTX4090 24G显卡 无黑屏无花屏 功能正常 顺丰包邮", "price": "¥11800"}
+        res = self.clf.evaluate(item, query="RTX 4090")
+        self.assertFalse(res.is_low_value)
+
+    def test_jev_arbiter_low_vmi_and_fallback(self):
+        from goofish_z.llm_arbiter import LLMArbiter
+        from unittest.mock import patch
+
+        arbiter = LLMArbiter(api_key="mock_key")
+
+        # 1. 状态码超出 0~4 范围时返回 None (降级回退本地规则)
+        with patch("urllib.request.urlopen") as mock_url:
+            mock_url.return_value.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"{\\"t\\":9,\\"p\\":0,\\"m\\":0}"}}]}'
+            v = arbiter.judge_jev({"title": "测试", "price": "1000"}, "4090", 1000.0)
+            self.assertIsNone(v)
+
+        # 2. t=0 但真实价格过高导致 VMI < 0.65 时，必须拦截
+        with patch("urllib.request.urlopen") as mock_url:
+            mock_url.return_value.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"{\\"t\\":0,\\"p\\":4000,\\"m\\":0}"}}]}'
+            v = arbiter.judge_jev({"title": "测试显卡", "price": "1000"}, "4090", 1500.0)
+            self.assertIsNotNone(v)
+            assert v is not None
+            self.assertTrue(v.is_blocked)
+            self.assertEqual(v.tier, "OVERPRICED_LOW_VALUE")
+
 
 if __name__ == "__main__":
     unittest.main()

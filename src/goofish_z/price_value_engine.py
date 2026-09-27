@@ -198,10 +198,11 @@ class PriceValueEngine:
         # -------------------------------------------------------------
         is_definitive_blocked = False
         clean_display_text = re.sub(r"不[出卖](?:假货|山寨|翻新|劣质|仿品|瑕疵品)", "", text)
+        clean_defect_text = re.sub(r"(?:无|没|没有|不|并非|杜绝|告别)(?:黑屏|花屏|短路|烧毁|进水|掉电|死机|暗病|暗伤|修|维修)", "", text)
         if PAT_DISPLAY_ONLY.search(clean_display_text):
             reasons.append("纯展示/小作文贴/引流不出")
             is_definitive_blocked = True
-        elif PAT_FATAL_DEFECT.search(text):
+        elif PAT_FATAL_DEFECT.search(clean_defect_text):
             reasons.append("严重硬件暗病/无法点亮/代码43/报废板")
             is_definitive_blocked = True
         elif PAT_IRRELEVANT_CATEGORY.search(text) and "相机" in text:
@@ -358,14 +359,14 @@ class PriceValueEngine:
             tags.append("扩容机")
 
         # 轻中度暗病 (指纹坏 / 接口不亮 / 缺金手指 / 屏幕色差 / 换外屏)：折价 ~40%
-        m_mod = PAT_MODERATE_DEFECT.search(text)
+        m_mod = PAT_MODERATE_DEFECT.search(clean_defect_text)
         if m_mod:
             fair_value *= 0.60
             defect_desc = m_mod.group(0)
             tags.append(f"暗病缺陷({defect_desc})")
 
         # 严重致命缺陷 (点不亮 / 短路 / 烧毁 / 摔坏 / 尸体 / 纯展示 / ID锁)：折价 ~85%
-        m_sev = PAT_SEVERE_DEFECT.search(text)
+        m_sev = PAT_SEVERE_DEFECT.search(clean_defect_text)
         if m_sev:
             fair_value *= 0.15
             defect_desc = m_sev.group(0)

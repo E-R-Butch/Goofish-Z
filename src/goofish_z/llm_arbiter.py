@@ -262,8 +262,13 @@ class LLMArbiter:
                 real_p = float(parsed.get("p", 0.0))
                 m_tier = int(parsed.get("m", 0))
 
+                # 校验状态代号是否在合法 0~4 范围内，非法则拒绝并回退本地引擎
+                if b_type not in BLOCK_TYPE_MAP:
+                    logger.warning(f"JEV 状态代号超出范围: {b_type} (合法为 0~4)，降级回退本地规则")
+                    return None
+
                 # --- 本地 Python 纳秒级完成数学运算与文案组装 ---
-                is_blocked, block_reason = BLOCK_TYPE_MAP.get(b_type, (False, "正常"))
+                is_blocked, block_reason = BLOCK_TYPE_MAP[b_type]
 
                 # 真实价格
                 raw_p_num = 0.0
@@ -285,19 +290,22 @@ class LLMArbiter:
                 fair_val = (baseline_price + mod_delta) if not is_blocked else 0.0
                 vmi = (fair_val / effective_p) if effective_p > 0 else 0.0
 
+                reasons = []
+                tags = []
                 tier_str = "FAIR_VALUE"
                 if is_blocked:
                     tier_str = "BLOCKED_SPECIAL"
+                    reasons.append(block_reason)
+                elif vmi < 0.65 and effective_p > 0:
+                    tier_str = "OVERPRICED_LOW_VALUE"
+                    is_blocked = True
+                    reasons.append(f"价格与价值严重不匹配(VMI={vmi:.2f}<0.65)")
                 elif vmi >= 1.05:
                     tier_str = "GREAT_VALUE"
                 elif vmi < 0.90:
                     tier_str = "SLIGHTLY_HIGH"
 
-                reasons = []
-                tags = []
-                if is_blocked:
-                    reasons.append(block_reason)
-                else:
+                if not is_blocked:
                     if real_p > 0 and real_p > raw_p_num:
                         tags.append(f"多SKU真实到手价:¥{real_p:.0f}")
                         reasons.append(f"多SKU引流还原: 实际到手价为¥{real_p:.0f}")

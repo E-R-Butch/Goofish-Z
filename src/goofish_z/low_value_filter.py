@@ -192,14 +192,15 @@ class LowValueClassifier:
             fair_value *= 0.85
             tags.append("扩容机")
 
-        m_mod = PAT_MODERATE_DEFECT.search(text)
+        clean_defect_text = re.sub(r"(?:无|没|没有|不|并非|杜绝|告别)(?:黑屏|花屏|短路|烧毁|进水|掉电|死机|暗病|暗伤|修|维修)", "", text)
+        m_mod = PAT_MODERATE_DEFECT.search(clean_defect_text)
         if m_mod:
             fair_value *= 0.60
             defect_desc = m_mod.group(0)
             tags.append(f"暗病缺陷({defect_desc})")
             reasons.append(f"硬件缺陷/暗病: 命中「{defect_desc}」")
 
-        m_sev = PAT_SEVERE_DEFECT.search(text)
+        m_sev = PAT_SEVERE_DEFECT.search(clean_defect_text)
         if m_sev:
             fair_value *= 0.15
             defect_desc = m_sev.group(0)
