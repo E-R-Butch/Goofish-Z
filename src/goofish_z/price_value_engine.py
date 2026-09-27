@@ -141,6 +141,7 @@ class PriceValueEngine:
         query: str | None = None,
     ) -> ValueAssessment:
         active_query = query if query is not None else self.query
+        has_baseline = (self.baseline_price is not None) or (batch_median is not None)
         base = self.baseline_price or batch_median or 1000.0
 
         title = str(item.get("title", ""))
@@ -480,6 +481,9 @@ class PriceValueEngine:
         if reasons:
             tier = "BLOCKED_SPECIAL"
             is_blocked = True
+        elif not has_baseline:
+            # 宽泛跨型号搜索，无统一定价基准，不根据单一 VMI 阈值强卡高档正常商品
+            tier = "FAIR_VALUE"
         elif vmi >= 1.15:
             tier = "GREAT_VALUE"      # 高性价比 / 价格超值
         elif vmi >= 0.85:

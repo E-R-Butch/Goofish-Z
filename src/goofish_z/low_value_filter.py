@@ -113,6 +113,7 @@ class LowValueClassifier:
         reasons: list[str] = []
         tags: list[str] = []
 
+        has_baseline = batch_median is not None
         base = batch_median or price or 1000.0
 
         # 1. 真实成本还原 (单价陷阱与多 SKU 真实对齐)
@@ -303,7 +304,7 @@ class LowValueClassifier:
 
         if reasons:
             is_low_value = True
-        elif vmi < 0.65:
+        elif has_baseline and vmi < 0.65:
             is_low_value = True
             reasons.append(
                 f"价格与价值严重不匹配(估算公允价值¥{fair_value:.0f}，实际到手¥{effective_price:.0f}，匹配度VMI={vmi:.2f})"

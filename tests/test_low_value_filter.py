@@ -141,6 +141,15 @@ class TestLowValueClassifier(unittest.TestCase):
         self.assertTrue(assessment.is_blocked)
         self.assertTrue(any("整机" in r for r in assessment.reasons))
 
+    def test_generic_search_does_not_block_high_end_hardware(self):
+        from goofish_z.price_value_engine import PriceValueEngine
+
+        pv = PriceValueEngine()
+        # 泛搜“显卡”无统一基准时，正常万元级高档卡不应因缺少同款基准而被低VMI误杀
+        item = {"title": "微星 RTX4090 超龙 24G 显卡 箱说全 功能正常", "price": "12000"}
+        assessment = pv.assess(item, query="显卡", batch_median=None)
+        self.assertFalse(assessment.is_blocked)
+
 
 if __name__ == "__main__":
     unittest.main()

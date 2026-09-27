@@ -347,9 +347,15 @@ def search(
     if filter_low_value:
         from goofish_z.price_value_engine import PriceValueEngine
         from goofish_z.core.price import price_value
+        from goofish_z.search_quality import extract_gpu_models
 
         raw_prices = [p for it in items if (p := price_value(it.get("price"))) is not None]
-        batch_median = sorted(raw_prices)[len(raw_prices) // 2] if raw_prices else None
+        # 仅在查询包含具体型号/规格（如 90HX, 3080, 4090 或具体显存）时计算同款中位数
+        # 对宽泛搜索（如单纯搜“显卡”、“手机”），不强制计算跨型号混合中位数，避免高档商品被低端混杂池误杀
+        has_specific_model = bool(extract_gpu_models(query)) or bool(
+            re.search(r"\d{3,4}|\d+G", str(query), re.IGNORECASE)
+        )
+        batch_median = (sorted(raw_prices)[len(raw_prices) // 2]) if (raw_prices and has_specific_model) else None
 
         pv_engine = PriceValueEngine()
         filtered = []
