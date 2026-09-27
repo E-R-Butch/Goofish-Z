@@ -39,7 +39,7 @@ class ItemApiTest(unittest.TestCase):
         call_command.assert_called_once_with("item.get", {"item_id": synthetic_item_id})
 
     def test_item_get_exposes_normalized_skus_and_price_range(self) -> None:
-        synthetic_item_id = "0000000000001"
+        synthetic_item_id = "0000000000000"
         expected = {
             "item_id": synthetic_item_id,
             "title": "合成测试多SKU商品",
