@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from goofish_z.search_quality import wants_parts, wants_service
+
 # 纯展示 / 占位 / 不出 / 小作文贴
 PAT_DISPLAY_ONLY = re.compile(
     r"(?:仅展示|只展示|仅供欣赏|不[出卖]|非卖[品贴]|暂不出|勿拍|请勿拍下|拍下不发|谁拍谁傻|抵制奸商|科普贴|曝光帖|挂人|避坑指南)",
@@ -208,16 +210,39 @@ class LowValueClassifier:
             fair_value = 0.0
             reasons.append("激活锁死/不可用砖头机")
 
-        if PAT_DISPLAY_ONLY.search(text):
+        clean_display_text = re.sub(r"不[出卖](?:假货|山寨|翻新|劣质|仿品|瑕疵品)", "", text)
+        if PAT_DISPLAY_ONLY.search(clean_display_text):
             fair_value = 0.0
             reasons.append("纯展示/小作文贴/引流不出")
 
         if PAT_ABUSIVE_TERMS.search(text):
             reasons.append("高危扣款霸王条款")
 
-        if PAT_VIRTUAL_SERVICE.search(text):
-            is_hardware_card = (price >= 500.0) and any(
-                k in text for k in ("10G", "10g", "显存", "单片", "单张", "三风扇", "顺丰到付", "包邮", "现货", "换好硅脂", "测试好发货")
+        if not wants_service(query) and PAT_VIRTUAL_SERVICE.search(text):
+            is_hardware_card = (price >= 400.0) and (
+                any(
+                    k in text
+                    for k in (
+                        "显卡",
+                        "单卡",
+                        "整卡",
+                        "原装",
+                        "功能正常",
+                        "包好",
+                        "成色",
+                        "箱说",
+                        "三风扇",
+                        "双风扇",
+                        "单片",
+                        "单张",
+                        "现货",
+                        "换好硅脂",
+                        "测试好发货",
+                        "顺丰到付",
+                        "包邮",
+                    )
+                )
+                or any(f"{c}G" in text.upper() for c in (8, 10, 11, 12, 16, 20, 24, 48))
             )
             if not is_hardware_card:
                 if price <= 300 or not any(k in text for k in ("成色", "单卡", "整卡", "箱说")):
@@ -233,7 +258,7 @@ class LowValueClassifier:
                 reasons.append("跨品类无关商品污染(相机/电池/数码外设混入显卡搜索)")
                 fair_value = 0.0
 
-        if PAT_ACCESSORY_GPU.search(title):
+        if not wants_parts(query) and PAT_ACCESSORY_GPU.search(title):
             if price < 250 and not any(k in text for k in ("带卡", "整卡", "原装显卡")):
                 reasons.append("周边配件/散热器/风扇(非整卡硬件)")
                 fair_value = 0.0

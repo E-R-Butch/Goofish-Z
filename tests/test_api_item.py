@@ -38,6 +38,23 @@ class ItemApiTest(unittest.TestCase):
         self.assertNotIn("seller_nick", json.loads(response.body))
         call_command.assert_called_once_with("item.get", {"item_id": synthetic_item_id})
 
+    def test_item_get_exposes_normalized_skus_and_price_range(self) -> None:
+        synthetic_item_id = "0000000000001"
+        expected = {
+            "item_id": synthetic_item_id,
+            "title": "合成测试多SKU商品",
+            "price": "¥3299",
+            "price_range": "¥3299 ~ ¥4099",
+            "skus": [{"name": "10G", "price": 3299.0}, {"name": "20G", "price": 4099.0}],
+            "status": "在线",
+            "detail": {},
+        }
+        with patch.object(api_app, "_call_command", return_value=expected):
+            response = api_app.api_item_get(item_id=synthetic_item_id)
+        data = json.loads(response.body)
+        self.assertEqual(data["price_range"], "¥3299 ~ ¥4099")
+        self.assertEqual(len(data["skus"]), 2)
+
     def test_rate_limit_is_exposed_as_retryable_http_response(self) -> None:
         command = type(
             "SyntheticCommand",

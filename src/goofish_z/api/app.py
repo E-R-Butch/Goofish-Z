@@ -120,7 +120,7 @@ def api_item_get(
     result = _call_command("item.get", {"item_id": item_id})
     if not isinstance(result, dict):
         raise HTTPException(500, "item.get 返回结构非预期")
-    public_fields = ("item_id", "title", "price", "status", "detail")
+    public_fields = ("item_id", "title", "price", "price_range", "skus", "status", "detail")
     return JSONResponse({field: result[field] for field in public_fields if field in result})
 
 

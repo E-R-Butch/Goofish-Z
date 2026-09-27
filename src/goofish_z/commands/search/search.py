@@ -345,21 +345,21 @@ def search(
 
     # 低价值与虚假套路过滤 (基于价格-价值匹配引擎: 纯展示不出 / 单价虚标引流 / 严重故障残次 / 跨型号引流 / 溢价暗病)
     if filter_low_value:
-        from goofish_z.low_value_filter import LowValueClassifier
+        from goofish_z.price_value_engine import PriceValueEngine
         from goofish_z.core.price import price_value
 
         raw_prices = [p for it in items if (p := price_value(it.get("price"))) is not None]
         batch_median = sorted(raw_prices)[len(raw_prices) // 2] if raw_prices else None
 
-        lv_classifier = LowValueClassifier(strict_model_match=True)
+        pv_engine = PriceValueEngine()
         filtered = []
         for it in items:
-            res = lv_classifier.evaluate(it, query=str(query), batch_median=batch_median)
-            if res.tags:
-                it.setdefault("tags", []).extend(res.tags)
-            it["vmi"] = res.vmi
-            if res.is_low_value:
-                excluded.append(_filtered_item(it, res.reasons))
+            assessment = pv_engine.assess(it, query=str(query), batch_median=batch_median)
+            if assessment.tags:
+                it.setdefault("tags", []).extend(assessment.tags)
+            it["vmi"] = assessment.vmi
+            if assessment.is_blocked:
+                excluded.append(_filtered_item(it, assessment.reasons))
             else:
                 filtered.append(it)
         items = filtered
@@ -392,11 +392,11 @@ def search(
                 passed_price.append(it)
                 continue
             if min_price is not None and p < min_price:
-                result.setdefault("blocked", []).append({"item_id": it.get("item_id"), "reason": [f"低于设定的最底价 {min_price}"], "item": it})
+                result.setdefault("blocked", []).append(_filtered_item(it, [f"低于设定的最底价 {min_price}"]))
                 result["blocked_count"] = result.get("blocked_count", 0) + 1
                 continue
             if max_price is not None and p > max_price:
-                result.setdefault("blocked", []).append({"item_id": it.get("item_id"), "reason": [f"高于设定的最高价 {max_price}"], "item": it})
+                result.setdefault("blocked", []).append(_filtered_item(it, [f"高于设定的最高价 {max_price}"]))
                 result["blocked_count"] = result.get("blocked_count", 0) + 1
                 continue
             passed_price.append(it)

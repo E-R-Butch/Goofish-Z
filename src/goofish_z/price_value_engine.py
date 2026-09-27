@@ -14,6 +14,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 from goofish_z.llm_arbiter import LLMArbiter
+from goofish_z.search_quality import wants_parts, wants_service
 
 # 1. 纯展示 / 占位 / 不出 (价值归零) / 小作文贴
 PAT_DISPLAY_ONLY = re.compile(
@@ -123,15 +124,28 @@ class PriceValueEngine:
         self,
         baseline_price: float | None = None,
         query: str = "",
-        enable_llm: bool = False,
+        enable_llm: bool | None = None,
         llm_model: str | None = None,
     ):
+        import os
+
         self.baseline_price = baseline_price
         self.query = query
-        self.enable_llm = enable_llm
-        self.arbiter = LLMArbiter(model=llm_model) if enable_llm else None
+        if enable_llm is None:
+            self.enable_llm = os.getenv("GOOFISH_ENABLE_LLM", "0") in ("1", "true", "True") or bool(
+                os.getenv("GOOFISH_LLM_API_KEY")
+            )
+        else:
+            self.enable_llm = enable_llm
+        self.arbiter = LLMArbiter(model=llm_model) if self.enable_llm else None
 
-    def assess(self, item: dict[str, Any], batch_median: float | None = None) -> ValueAssessment:
+    def assess(
+        self,
+        item: dict[str, Any],
+        batch_median: float | None = None,
+        query: str | None = None,
+    ) -> ValueAssessment:
+        active_query = query if query is not None else self.query
         base = self.baseline_price or batch_median or 1000.0
 
         title = str(item.get("title", ""))
@@ -183,7 +197,8 @@ class PriceValueEngine:
         # 2. 免费保守正则快速判定 (高确定性直接处理，绝不消耗 LLM 费用与耗时)
         # -------------------------------------------------------------
         is_definitive_blocked = False
-        if PAT_DISPLAY_ONLY.search(text):
+        clean_display_text = re.sub(r"不[出卖](?:假货|山寨|翻新|劣质|仿品|瑕疵品)", "", text)
+        if PAT_DISPLAY_ONLY.search(clean_display_text):
             reasons.append("纯展示/小作文贴/引流不出")
             is_definitive_blocked = True
         elif PAT_FATAL_DEFECT.search(text):
@@ -368,10 +383,32 @@ class PriceValueEngine:
             reasons.append("高危扣款霸王条款")
 
         # 虚拟技术服务 / 驱动代刷 / 解锁教程 / 飞行表 / 代工焊电容
-        if PAT_VIRTUAL_SERVICE.search(text):
-            # 真实整卡硬件(标价>=500且含10G/显卡/单片等整卡特征)，卖家附送驱动/技术支持属正常赠品，绝不误杀！
-            is_hardware_card = (price >= 500.0) and any(
-                k in text for k in ("10G", "10g", "显存", "单片", "单张", "三风扇", "顺丰到付", "包邮", "现货", "换好硅脂", "测试好发货")
+        if not wants_service(active_query) and PAT_VIRTUAL_SERVICE.search(text):
+            # 真实整卡硬件(标价>=400且含显卡/单片/显存容量等整卡特征)，卖家附送驱动/技术支持属正常赠品，绝不误杀！
+            is_hardware_card = (price >= 400.0) and (
+                any(
+                    k in text
+                    for k in (
+                        "显卡",
+                        "单卡",
+                        "整卡",
+                        "原装",
+                        "功能正常",
+                        "包好",
+                        "成色",
+                        "箱说",
+                        "三风扇",
+                        "双风扇",
+                        "单片",
+                        "单张",
+                        "现货",
+                        "换好硅脂",
+                        "测试好发货",
+                        "顺丰到付",
+                        "包邮",
+                    )
+                )
+                or any(f"{c}G" in text.upper() for c in (8, 10, 11, 12, 16, 20, 24, 48))
             )
             if not is_hardware_card:
                 if price <= 300 or not any(k in text for k in ("成色", "单卡", "整卡", "箱说")):
@@ -379,7 +416,7 @@ class PriceValueEngine:
                     fair_value = 0.0
 
         # 跨品类完全无关商品污染 (如搜显卡出相机、电池、充电器)
-        if any(k in self.query.upper() for k in ("HX", "3080", "3090", "显卡", "GPU")):
+        if any(k in active_query.upper() for k in ("HX", "3080", "3090", "显卡", "GPU")):
             if PAT_IRRELEVANT_CATEGORY.search(title) or (
                 PAT_IRRELEVANT_CATEGORY.search(text)
                 and not any(k in text for k in ("显卡", "显存", "算力", "PCI", "GA102", "核芯", "风扇"))
@@ -388,7 +425,7 @@ class PriceValueEngine:
                 fair_value = 0.0
 
         # 配件混淆 (显卡风扇/支架/散热套件混进整卡搜索)
-        if PAT_ACCESSORY_GPU.search(title):
+        if not wants_parts(active_query) and PAT_ACCESSORY_GPU.search(title):
             if price < 250 and not any(k in text for k in ("带卡", "整卡", "原装显卡")):
                 reasons.append("周边配件/散热器/风扇(非整卡硬件)")
                 fair_value = 0.0

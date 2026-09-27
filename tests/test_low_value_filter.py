@@ -65,6 +65,24 @@ class TestLowValueClassifier(unittest.TestCase):
         self.assertTrue(any("多SKU引流陷阱" in r for r in res.reasons))
         self.assertIn("多SKU真实到手价:¥4099(RTX3080 20G)", res.tags)
 
+    def test_respect_explicit_accessory_query(self):
+        # 搜配件时，买家本身就是买配件，绝不误杀配件
+        item = {"title": "微星 RTX4090 魔龙 原装散热器 拆机配件", "price": "¥180"}
+        res = self.clf.evaluate(item, query="4090散热器")
+        self.assertFalse(res.is_low_value)
+
+    def test_marketing_negation_not_blocked(self):
+        # “不卖假货”属于营销正向声明，绝不能当成“不出/仅展示”误拦截
+        item = {"title": "七彩虹 RTX4090 24G 不卖假货 只出正品 箱说全", "price": "¥11500"}
+        res = self.clf.evaluate(item, query="RTX 4090")
+        self.assertFalse(res.is_low_value)
+
+    def test_bundled_driver_with_hardware_not_blocked(self):
+        # 真实整卡附带提供驱动，属于正常附赠服务，绝不能误判为代刷服务
+        item = {"title": "RTX4090 24G显卡 功能正常 提供驱动 测试好发货", "price": "¥12000"}
+        res = self.clf.evaluate(item, query="RTX 4090")
+        self.assertFalse(res.is_low_value)
+
 
 if __name__ == "__main__":
     unittest.main()
