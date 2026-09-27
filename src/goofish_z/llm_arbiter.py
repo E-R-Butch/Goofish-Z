@@ -13,6 +13,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
+from goofish_z.search_quality import wants_parts, wants_service
+
 logger = logging.getLogger(__name__)
 
 # 做工档位映射 (本地 Python 极速计算加成)
@@ -269,6 +271,10 @@ class LLMArbiter:
 
                 # --- 本地 Python 纳秒级完成数学运算与文案组装 ---
                 is_blocked, block_reason = BLOCK_TYPE_MAP[b_type]
+                if b_type == 1 and wants_parts(query):
+                    is_blocked = False
+                elif b_type == 2 and wants_service(query):
+                    is_blocked = False
 
                 # 真实价格
                 raw_p_num = 0.0

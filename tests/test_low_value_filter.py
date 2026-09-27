@@ -110,6 +110,37 @@ class TestLowValueClassifier(unittest.TestCase):
             self.assertTrue(v.is_blocked)
             self.assertEqual(v.tier, "OVERPRICED_LOW_VALUE")
 
+    def test_unknown_price_with_virtual_service_no_crash(self):
+        from goofish_z.price_value_engine import PriceValueEngine
+
+        pv = PriceValueEngine()
+        # 面议/无标价且标题包含提供驱动，不应引发 TypeError
+        item = {"title": "RTX4090 显卡 功能正常 提供驱动", "price": "面议"}
+        assessment = pv.assess(item, query="RTX 4090")
+        self.assertFalse(assessment.is_blocked)
+
+    def test_jev_honors_explicit_service_and_parts_query(self):
+        from goofish_z.llm_arbiter import LLMArbiter
+        from unittest.mock import patch
+
+        arbiter = LLMArbiter(api_key="mock_key")
+        # 用户显式搜索“4090租赁”，返回 t=2 时不应拦截
+        with patch("urllib.request.urlopen") as mock_url:
+            mock_url.return_value.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"{\\"t\\":2,\\"p\\":0,\\"m\\":0}"}}]}'
+            v = arbiter.judge_jev({"title": "RTX4090 GPU算力租赁按天出租", "price": "50"}, "4090租赁", 50.0)
+            self.assertIsNotNone(v)
+            assert v is not None
+            self.assertFalse(v.is_blocked)
+
+    def test_host_machine_with_4090_query_blocked(self):
+        from goofish_z.price_value_engine import PriceValueEngine
+
+        pv = PriceValueEngine()
+        item = {"title": "RTX4090 海景房台式主机整机", "price": "15000"}
+        assessment = pv.assess(item, query="RTX4090")
+        self.assertTrue(assessment.is_blocked)
+        self.assertTrue(any("整机" in r for r in assessment.reasons))
+
 
 if __name__ == "__main__":
     unittest.main()

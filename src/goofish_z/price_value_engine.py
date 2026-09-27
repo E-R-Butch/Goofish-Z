@@ -394,8 +394,8 @@ class PriceValueEngine:
 
         # 虚拟技术服务 / 驱动代刷 / 解锁教程 / 飞行表 / 代工焊电容
         if not wants_service(active_query) and PAT_VIRTUAL_SERVICE.search(text):
-            # 真实整卡硬件(标价>=400且含显卡/单片/显存容量等整卡特征)，卖家附送驱动/技术支持属正常赠品，绝不误杀！
-            is_hardware_card = (price >= 400.0) and (
+            # 真实整卡硬件(标价>=400或面议，且含显卡/单片/显存容量等整卡特征)，卖家附送驱动/技术支持属正常赠品，绝不误杀！
+            is_hardware_card = (price is None or price >= 400.0) and (
                 any(
                     k in text
                     for k in (
@@ -446,7 +446,10 @@ class PriceValueEngine:
             fair_value = 0.0
 
         # 搜显卡单卡时整机混入引流
-        if PAT_HOST_MACHINE.search(title) and any(k in active_query.upper() for k in ("HX", "3080", "3090", "显卡")):
+        if PAT_HOST_MACHINE.search(title) and any(
+            k in active_query.upper()
+            for k in ("HX", "3060", "3070", "3080", "3090", "4060", "4070", "4080", "4090", "5080", "5090", "显卡", "GPU")
+        ):
             reasons.append("整机/台式电脑混入显卡单卡搜索")
             fair_value = 0.0
 
