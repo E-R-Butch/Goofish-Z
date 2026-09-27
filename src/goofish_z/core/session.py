@@ -6,6 +6,7 @@ cookie 路径：~/.goofish-z/cookies.json（可用 GOOFISH_Z_DATA 覆盖）。
 from __future__ import annotations
 
 import json
+import os
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
@@ -136,20 +137,36 @@ class Session:
 
 def _load_or_bootstrap_cookies(path: Path) -> dict[str, str]:
     """三级兜底：cookies.json → 本机 Chrome 自动抓取 → AuthRequiredError。"""
+    cached_account = None
     if path.exists():
         try:
-            return _load_cookies(path)
-        except AuthRequiredError:
+            cookies = _load_cookies(path)
+            if cookies.get("unb") and cookies.get("_m_h5_tk"):
+                return cookies
+            # Expired identity is only an account guard, never a usable credential.
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                identity = [dict(c, expires=-1) for c in raw if c.get("name") == "unb"]
+                cached_account = goofish_cookie_values(identity).get("unb")
+            elif isinstance(raw, dict):
+                cached_account = raw.get("unb")
+        except (AuthRequiredError, json.JSONDecodeError):
             pass
+    if os.environ.get("GOOFISH_NO_CHROME_BOOTSTRAP") == "1":
+        raise AuthRequiredError("缓存登录态缺失或已过期；自动浏览器恢复已禁用，请执行 goofish-z auth login")
     try:
         from goofish_z.core.browser_cookie import extract_goofish_cookies
 
         _, entries = extract_goofish_cookies(browser="chrome")
         cookies = goofish_cookie_values(entries)
-        if cookies:
+        if cookies.get("unb") and cookies.get("_m_h5_tk"):
+            if cached_account and cookies["unb"] != cached_account:
+                raise AuthRequiredError("浏览器账号与缓存账号不同；请确认目标账号后执行 goofish-z auth login")
             logger.info("从本机 Chrome 自动抓取到 cookie")
             write_cookies_json(path, entries)
             return cookies
+    except AuthRequiredError:
+        raise
     except Exception as e:  # noqa: BLE001
         logger.debug(f"Chrome cookie 自动抓取失败: {e}")
     raise AuthRequiredError(f"未找到有效 cookie，请先执行 goofish-z auth login（或检查 {path}）")

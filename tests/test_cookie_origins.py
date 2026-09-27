@@ -128,3 +128,49 @@ sys.modules['browser_cookie3'] = module
         self.assertFalse(browser_cookie._is_valid(wrong))
         expired = [dict(c, expires=1) for c in entries()]
         self.assertFalse(browser_cookie._is_valid(expired))
+
+    def test_expired_cached_credentials_recover_from_same_browser_account(self):
+        stale = [dict(c, expires=1) for c in entries()]
+        session.write_cookies_json(self.cookie_path, stale)
+        with patch.dict('os.environ', {'GOOFISH_NO_CHROME_BOOTSTRAP': '0'}), \
+             patch.object(browser_cookie, 'extract_goofish_cookies', return_value=('chrome', entries())) as extract:
+            values = session._load_or_bootstrap_cookies(self.cookie_path)
+        extract.assert_called_once_with(browser='chrome')
+        self.assertEqual(values['_m_h5_tk'], 'synthetic-goofish_0')
+        self.assertEqual(json.loads(self.cookie_path.read_text()), entries())
+
+    def test_usable_cache_does_not_read_browser(self):
+        session.write_cookies_json(self.cookie_path, entries())
+        with patch.object(browser_cookie, 'extract_goofish_cookies') as extract:
+            session._load_or_bootstrap_cookies(self.cookie_path)
+        extract.assert_not_called()
+
+    def test_disabled_bootstrap_does_not_read_browser_or_overwrite_expired_cache(self):
+        stale = [dict(c, expires=1) for c in entries()]
+        session.write_cookies_json(self.cookie_path, stale)
+        with patch.dict('os.environ', {'GOOFISH_NO_CHROME_BOOTSTRAP': '1'}), \
+             patch.object(browser_cookie, 'extract_goofish_cookies') as extract, \
+             self.assertRaises(session.AuthRequiredError):
+            session._load_or_bootstrap_cookies(self.cookie_path)
+        extract.assert_not_called()
+        self.assertEqual(json.loads(self.cookie_path.read_text()), stale)
+
+    def test_recovery_cannot_silently_switch_accounts(self):
+        stale = [dict(c, expires=1) for c in entries()]
+        session.write_cookies_json(self.cookie_path, stale)
+        other = [dict(c, value='different-user') if c['name'] == 'unb' else c for c in entries()]
+        with patch.dict('os.environ', {'GOOFISH_NO_CHROME_BOOTSTRAP': '0'}), \
+             patch.object(browser_cookie, 'extract_goofish_cookies', return_value=('chrome', other)), \
+             self.assertRaisesRegex(session.AuthRequiredError, '账号不同'):
+            session._load_or_bootstrap_cookies(self.cookie_path)
+        self.assertEqual(json.loads(self.cookie_path.read_text()), stale)
+
+    def test_incomplete_browser_credentials_do_not_overwrite_cache(self):
+        stale = [dict(c, expires=1) for c in entries()]
+        session.write_cookies_json(self.cookie_path, stale)
+        incomplete = [c for c in entries() if c['name'] != '_m_h5_tk']
+        with patch.dict('os.environ', {'GOOFISH_NO_CHROME_BOOTSTRAP': '0'}), \
+             patch.object(browser_cookie, 'extract_goofish_cookies', return_value=('chrome', incomplete)), \
+             self.assertRaises(session.AuthRequiredError):
+            session._load_or_bootstrap_cookies(self.cookie_path)
+        self.assertEqual(json.loads(self.cookie_path.read_text()), stale)

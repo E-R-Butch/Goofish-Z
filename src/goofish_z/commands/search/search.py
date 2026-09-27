@@ -316,7 +316,16 @@ def filter_search_items(query: str, items: list[dict[str, Any]]) -> tuple[list[d
     strategy=Strategy.COOKIE,
     columns=["rank", "item_id", "title", "price", "condition", "brand", "location", "badge", "url"],
 )
-def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int = 1, sort: str = "default") -> dict[str, Any]:
+def search(
+    query: str,
+    limit: int = 20,
+    filter_blacklist: bool = True,
+    page: int = 1,
+    sort: str = "default",
+    min_price: float | None = None,
+    max_price: float | None = None,
+    filter_low_value: bool = True,
+) -> dict[str, Any]:
     # 限流：搜索间隔 30s（防接口级风控）
     from goofish_z.core.limiter import check as rate_check
     from goofish_z.core.guard import check as guard_check
@@ -333,6 +342,27 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int
     items = fetched["items"]
     fetched_count = len(items)
     items, excluded = filter_search_items(str(query).strip(), items)
+
+    # 低价值与虚假套路过滤 (基于价格-价值匹配引擎: 纯展示不出 / 单价虚标引流 / 严重故障残次 / 跨型号引流 / 溢价暗病)
+    if filter_low_value:
+        from goofish_z.low_value_filter import LowValueClassifier
+        from goofish_z.core.price import price_value
+
+        raw_prices = [p for it in items if (p := price_value(it.get("price"))) is not None]
+        batch_median = sorted(raw_prices)[len(raw_prices) // 2] if raw_prices else None
+
+        lv_classifier = LowValueClassifier(strict_model_match=True)
+        filtered = []
+        for it in items:
+            res = lv_classifier.evaluate(it, query=str(query), batch_median=batch_median)
+            if res.tags:
+                it.setdefault("tags", []).extend(res.tags)
+            it["vmi"] = res.vmi
+            if res.is_low_value:
+                excluded.append(_filtered_item(it, res.reasons))
+            else:
+                filtered.append(it)
+        items = filtered
     result: dict[str, Any] = {
         **fetched, "sort": sort, "items": items, "count": len(items),
         "filtered_count": fetched_count - len(items),
@@ -351,6 +381,28 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int
         result["count"] = len(passed)
         result["blocked"] = [_filtered_item(b, b.get("_blocked_reasons", [])) for b in blocked]
         result["blocked_count"] = len(blocked)
+    
+    # 价格栅栏过滤
+    if min_price is not None or max_price is not None:
+        from goofish_z.core.price import price_value
+        passed_price = []
+        for it in result.get("items", []):
+            p = price_value(it.get("price"))
+            if p is None:
+                passed_price.append(it)
+                continue
+            if min_price is not None and p < min_price:
+                result.setdefault("blocked", []).append({"item_id": it.get("item_id"), "reason": [f"低于设定的最底价 {min_price}"], "item": it})
+                result["blocked_count"] = result.get("blocked_count", 0) + 1
+                continue
+            if max_price is not None and p > max_price:
+                result.setdefault("blocked", []).append({"item_id": it.get("item_id"), "reason": [f"高于设定的最高价 {max_price}"], "item": it})
+                result["blocked_count"] = result.get("blocked_count", 0) + 1
+                continue
+            passed_price.append(it)
+        result["items"] = passed_price
+        result["count"] = len(passed_price)
+        
     return result
 
 
