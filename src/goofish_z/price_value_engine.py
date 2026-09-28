@@ -233,7 +233,14 @@ class PriceValueEngine:
         if PAT_DISPLAY_ONLY.search(clean_display_text):
             reasons.append("纯展示/小作文贴/引流不出")
             is_definitive_blocked = True
-        elif PAT_FATAL_DEFECT.search(clean_defect_text) and not parts_or_service_intent:
+        elif (
+            PAT_FATAL_DEFECT.search(clean_defect_text)
+            and not parts_or_service_intent
+            # 残值（base×25%）以内或面议的练手件不预拦，交由下方价格敏感判定：
+            # 致命故障只有在标价超过料板残值时才做确定性拦截。
+            and price is not None
+            and price > base * 0.25
+        ):
             reasons.append("严重硬件暗病/无法点亮/代码43/报废板")
             is_definitive_blocked = True
         elif PAT_IRRELEVANT_CATEGORY.search(text) and "相机" in text and _targets_gpu(active_query):
@@ -378,8 +385,10 @@ class PriceValueEngine:
 
         # 负向折损 (合理折价预期)
         # 严重致命故障 / 尸体卡 (不通电/核心坏/上机冰凉，仅剩料板拆颗粒残值 ~15%)
+        fatal_discounted = False
         if PAT_FATAL_DEFECT.search(clean_defect_text) and not parts_or_service_intent:
             fair_value *= 0.15
+            fatal_discounted = True
             tags.append("严重硬件故障/料板尸体")
             if price is not None and price > base * 0.25:
                 reasons.append(f"严重致命故障(不通电/尸体卡)，但标价¥{price:.0f}远超料板残值")
@@ -420,8 +429,9 @@ class PriceValueEngine:
             tags.append(f"暗病缺陷({defect_desc})")
 
         # 严重致命缺陷 (点不亮 / 短路 / 烧毁 / 摔坏 / 尸体 / 纯展示 / ID锁)：折价 ~85%
+        # 已按料板残值(15%)处理过的致命故障不重复打折，避免同一损伤双重折旧。
         m_sev = PAT_SEVERE_DEFECT.search(clean_defect_text)
-        if m_sev:
+        if m_sev and not fatal_discounted:
             fair_value *= 0.15
             defect_desc = m_sev.group(0)
             tags.append(f"严重故障({defect_desc})")

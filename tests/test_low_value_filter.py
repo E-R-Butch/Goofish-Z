@@ -207,7 +207,9 @@ class TestPriceValueEngineReview(unittest.TestCase):
     def test_parts_query_keeps_target_listings(self):
         wanted = self._assess("RTX4090 料板 无核心 供拆件", "¥200", "4090料板")
         self.assertFalse(wanted.is_blocked)
-        normal = self._assess("RTX4090 料板 无核心 供拆件", "¥200", "4090")
+        cheap_normal = self._assess("RTX4090 料板 无核心 供拆件", "¥200", "4090")
+        self.assertFalse(cheap_normal.is_blocked)  # 残值（≤base×25%）以内的练手件保持可检视
+        normal = self._assess("RTX4090 料板 无核心 供拆件", "¥800", "4090")
         self.assertTrue(normal.is_blocked)
 
     def test_mod_adjustments_use_active_query(self):
@@ -266,6 +268,16 @@ class TestPriceValueEngineReview(unittest.TestCase):
         fake.judge_jev.assert_not_called()
         engine.assess({"title": "RTX4090 24G 1600 急出 功能正常", "price": "¥1600"}, query="RTX4090", batch_median=3000)
         fake.judge_jev.assert_called()
+
+
+    def test_cheap_fatal_practice_card_stays_inspectable(self):
+        cheap = self._assess("RTX3080 点不亮 故障练手卡", "¥100", "RTX3080", 2000)
+        self.assertFalse(cheap.is_blocked)
+        self.assertGreater(cheap.fair_value, 200)  # 仅按料板残值折一次，不双重折旧
+        self.assertTrue(any("料板尸体" in t for t in cheap.tags))
+        expensive = self._assess("RTX3080 点不亮 故障练手卡", "¥3000", "RTX3080", 2000)
+        self.assertTrue(expensive.is_blocked)
+        self.assertTrue(any("料板残值" in r for r in expensive.reasons))
 
 
 class TestLegacyClassifierParity(unittest.TestCase):

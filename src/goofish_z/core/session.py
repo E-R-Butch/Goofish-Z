@@ -164,9 +164,14 @@ def _load_or_bootstrap_cookies(path: Path) -> dict[str, str]:
         if cookies.get("unb") and cookies.get("_m_h5_tk"):
             if cached_account and cookies["unb"] != cached_account:
                 raise AuthRequiredError("浏览器账号与缓存账号不同；请确认目标账号后执行 goofish-z auth login")
-            logger.info("从本机 Chrome 自动抓取到 cookie")
-            write_cookies_json(path, entries)
-            return cookies
+            # cookie2 才是真正的 session token（见 core/refresh.py）：只有 unb/_m_h5_tk
+            # 的半套 cookie 覆盖缓存，会让后续加载误判为可用、跳过恢复，鉴权持续失败。
+            if not cookies.get("cookie2"):
+                logger.debug("Chrome cookie 缺少 cookie2（会话不完整），不覆盖缓存")
+            else:
+                logger.info("从本机 Chrome 自动抓取到 cookie")
+                write_cookies_json(path, entries)
+                return cookies
     except AuthRequiredError:
         raise
     except Exception as e:  # noqa: BLE001

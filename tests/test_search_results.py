@@ -230,10 +230,10 @@ class SearchResultsTest(OfflineCase):
         self.assertIn("价格未知", result["blocked"][0]["reasons"][0])
 
     def test_short_product_models_count_as_specific_queries(self):
-        for value in ("iPhone 15", "iPad mini 6", "小米14", "RTX4090", "90HX", "DDR4 32G"):
+        for value in ("iPhone 15", "iPad mini 6", "小米14", "RTX4090", "90HX"):
             with self.subTest(value=value):
                 self.assertTrue(self.search._mentions_specific_product(value))
-        for value in ("显卡", "投影仪", "电脑主机"):
+        for value in ("显卡", "投影仪", "电脑主机", "显卡 24G", "512G 手机", "DDR4 32G"):
             with self.subTest(value=value):
                 self.assertFalse(self.search._mentions_specific_product(value))
 
@@ -284,3 +284,17 @@ class SearchResultsTest(OfflineCase):
         self.assertIn("synthetic-pro-a", kept)
         self.assertIn("synthetic-pro-b", kept)
         self.assertIn("synthetic-base-a", kept)
+
+    def test_capacity_only_query_does_not_enable_mixed_model_baseline(self):
+        fetched = {"items": [
+            fixture("5200", item_id="synthetic-3090-a", title="合成3090 24G显卡 成色正常"),
+            fixture("5400", item_id="synthetic-3090-b", title="合成3090 24G显卡 无拆修"),
+            fixture("5600", item_id="synthetic-3090-c", title="合成3090 24G显卡 国行"),
+            fixture("12000", item_id="synthetic-4090", title="合成4090 24G显卡 功能正常"),
+        ], "page": 1, "source_count": 4, "has_next": False}
+        with patch.object(self.search, "_run", AsyncMock(return_value=fetched)):
+            result = self.search.search("显卡 24G")
+        kept = {it["item_id"] for it in result["items"]}
+        self.assertIn("synthetic-4090", kept)
+        self.assertIn("synthetic-3090-a", kept)
+        self.assertEqual(result["filtered_count"], 0)

@@ -44,17 +44,22 @@ def _item_id_from_url(url: str) -> str:
 _NON_GPU_MODEL_RE = re.compile(
     r"(?:iphone|ipad|ipod|imac|macbook|airpods?|apple\s*watch|galaxy|pixel|redmi|honor|huawei|mate|nova|thinkpad|legion|yoga|surface|switch|ps[45]|xbox)"
     r"(?:\s+(?:mini|air|pro|max|plus|ultra|note|book|series))?[\s\-]*\d{1,2}(?!\d)"
-    r"|[\u4e00-\u9fff]{2,4}[\s\-]*\d{1,2}(?!\d)",
+    r"|[\u4e00-\u9fff]{2,4}[\s\-]*\d{1,2}(?![\dGgTt])",
     re.IGNORECASE,
 )
 
 
 def _mentions_specific_product(query: str) -> bool:
-    """查询是否指向具体型号/规格（决定是否计算同款中位数并启用 VMI 判定）。"""
+    """查询是否指向具体型号/规格（决定是否计算同款中位数并启用 VMI 判定）。
+
+    仅认可真实型号 token（显卡型号正则 / 产品线型号正则）；纯容量或裸数字
+    （如「显卡 24G」「512G 手机」）不足以启用单一基准——不同机型混在同一
+    池里会互相拉偏基准，误杀高价正常商品。
+    """
     from goofish_z.search_quality import extract_gpu_models
 
     q = str(query or "")
-    if extract_gpu_models(q) or re.search(r"\d{3,4}|\d+G", q, re.IGNORECASE):
+    if extract_gpu_models(q):
         return True
     return bool(_NON_GPU_MODEL_RE.search(q))
 
