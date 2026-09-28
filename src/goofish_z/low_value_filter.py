@@ -71,6 +71,9 @@ PAT_MDM = re.compile(r"(?:企业管理机|配置锁|监管锁|MDM|绕过ID|屏�
 # iCloud 真正不可用激活锁 (带ID锁/有ID锁)
 PAT_ICLOUD_LOCKED = re.compile(r"(?:(?:有|带)ID锁|ID锁机)", re.IGNORECASE)
 
+# 蜂窝网络属性 (独立匹配，避免把 64G/24G 这类容量数字误认为 4G/5G)
+PAT_CELLULAR = re.compile(r"(?<![0-9A-Za-z])(?:4G|5G)(?![0-9A-Za-z]|显存|内存)", re.IGNORECASE)
+
 
 @dataclass
 class ClassificationResult:
@@ -182,7 +185,7 @@ class LowValueClassifier:
             fair_value *= 1.50
             tags.append("512G超大容量")
 
-        if any(k in text for k in ("插卡", "蜂窝", "4G", "5G", "LTE")):
+        if any(k in text for k in ("插卡", "蜂窝", "LTE")) or PAT_CELLULAR.search(text):
             fair_value *= 1.15
             tags.append("蜂窝插卡版")
 
@@ -199,6 +202,7 @@ class LowValueClassifier:
             tags.append("扩容机")
 
         clean_defect_text = re.sub(r"(?:无|没|没有|不|并非|杜绝|告别)(?:黑屏|花屏|短路|烧毁|进水|掉电|死机|暗病|暗伤|修|维修)", "", text)
+        clean_lock_text = re.sub(r"(?:没有|没|无|不带|不含)ID锁", "", text)
         m_mod = PAT_MODERATE_DEFECT.search(clean_defect_text)
         if m_mod:
             fair_value *= 0.60
@@ -213,7 +217,7 @@ class LowValueClassifier:
             tags.append(f"严重故障({defect_desc})")
             reasons.append(f"硬件缺陷/严重故障: 命中「{defect_desc}」")
 
-        if PAT_ICLOUD_LOCKED.search(text):
+        if PAT_ICLOUD_LOCKED.search(clean_lock_text):
             fair_value = 0.0
             reasons.append("激活锁死/不可用砖头机")
 

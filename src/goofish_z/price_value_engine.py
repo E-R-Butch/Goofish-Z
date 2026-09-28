@@ -14,7 +14,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 from goofish_z.llm_arbiter import LLMArbiter
-from goofish_z.search_quality import wants_parts, wants_service
+from goofish_z.search_quality import extract_gpu_models, wants_parts, wants_service
 
 # 1. 纯展示 / 占位 / 不出 (价值归零) / 小作文贴
 PAT_DISPLAY_ONLY = re.compile(
@@ -40,7 +40,7 @@ PAT_ACCESSORY_GPU = re.compile(
 
 # 搜显卡单卡时整机混淆引流
 PAT_HOST_MACHINE = re.compile(
-    r"(?:台式主机|游戏备用机|电脑主机|台式电脑整机|海景房台式主机|高端主机|AI\\s*主机)",
+    r"(?:台式主机|游戏备用机|电脑主机|台式电脑整机|海景房台式主机|高端主机|AI\s*主机)",
     re.IGNORECASE,
 )
 
@@ -99,6 +99,15 @@ PAT_MDM = re.compile(r"(?:企业管理机|配置锁|监管锁|MDM|绕过ID|屏�
 
 # 7. 真正不可用的激活锁 (有ID锁)
 PAT_ICLOUD_LOCKED = re.compile(r"(?:(?:有|带)ID锁|ID锁机)", re.IGNORECASE)
+
+# 蜂窝网络属性 (独立匹配，避免把 64G/24G 这类容量数字误认为 4G/5G)
+PAT_CELLULAR = re.compile(r"(?<![0-9A-Za-z])(?:4G|5G)(?![0-9A-Za-z]|显存|内存)", re.IGNORECASE)
+
+
+def _targets_gpu(query: str) -> bool:
+    """查询是否面向显卡单卡；跨品类与配件规则只允许在显卡搜索里生效。"""
+    q = str(query or "")
+    return bool(extract_gpu_models(q)) or any(k in q.upper() for k in ("显卡", "GPU", "HX"))
 
 
 @dataclass
@@ -196,15 +205,17 @@ class PriceValueEngine:
         # 2. 免费保守正则快速判定 (高确定性直接处理，绝不消耗 LLM 费用与耗时)
         # -------------------------------------------------------------
         is_definitive_blocked = False
+        parts_or_service_intent = wants_parts(active_query) or wants_service(active_query)
         clean_display_text = re.sub(r"不[出卖](?:假货|山寨|翻新|劣质|仿品|瑕疵品)", "", text)
         clean_defect_text = re.sub(r"(?:无|没|没有|不|并非|杜绝|告别)(?:黑屏|花屏|短路|烧毁|进水|掉电|死机|暗病|暗伤|修|维修)", "", text)
+        clean_lock_text = re.sub(r"(?:没有|没|无|不带|不含)ID锁", "", text)
         if PAT_DISPLAY_ONLY.search(clean_display_text):
             reasons.append("纯展示/小作文贴/引流不出")
             is_definitive_blocked = True
-        elif PAT_FATAL_DEFECT.search(clean_defect_text):
+        elif PAT_FATAL_DEFECT.search(clean_defect_text) and not parts_or_service_intent:
             reasons.append("严重硬件暗病/无法点亮/代码43/报废板")
             is_definitive_blocked = True
-        elif PAT_IRRELEVANT_CATEGORY.search(text) and "相机" in text:
+        elif PAT_IRRELEVANT_CATEGORY.search(text) and "相机" in text and _targets_gpu(active_query):
             reasons.append("跨品类杂质(相机配件电池混入)")
             is_definitive_blocked = True
 
@@ -212,7 +223,7 @@ class PriceValueEngine:
         # 3. 混合协同仲裁 (Hybrid Escalation to LLM):
         # 仅在免费正则出现「存疑/争议/深水大漏/多SKU复杂」时才调用 LLM
         # -------------------------------------------------------------
-        if self.enable_llm and self.arbiter and self.arbiter.api_key and not is_definitive_blocked:
+        if self.enable_llm and self.arbiter and self.arbiter.configured and not is_definitive_blocked:
             escalate = False
             escalate_reason = ""
 
@@ -241,7 +252,7 @@ class PriceValueEngine:
                     verdict_tags.append("JEV极简仲裁")
 
                     # 本地确定性致命锁与霸王条款兜底检查 (绝不让带ID锁或恶意霸王条款漏网)
-                    if PAT_ICLOUD_LOCKED.search(text):
+                    if PAT_ICLOUD_LOCKED.search(clean_lock_text):
                         verdict_is_blocked = True
                         verdict_reasons.append("激活锁死/不可用砖头机(带ID锁)")
                     if PAT_ABUSIVE_TERMS.search(text):
@@ -286,7 +297,7 @@ class PriceValueEngine:
             tags.append(f"已补电容(+¥{mod_val:.0f}:{'&'.join(mod_notes)})")
 
         # ---------------- 3080 20G / GA102 魔改卡专属工序与硬件层级智能推导 ----------------
-        if "3080" in self.query.upper() and ("20G" in self.query.upper() or "20G" in text.upper()):
+        if "3080" in active_query.upper() and ("20G" in active_query.upper() or "20G" in text.upper()):
             # 1. 散热总成魔改 (如改 4090 TUF / 4090 散热器，用料成本约 ¥150)
             if any(k in text for k in ("4090风扇", "4090散热", "改4090", "4090tuf")):
                 physical_adjustments += 150.0
@@ -320,14 +331,14 @@ class PriceValueEngine:
         # ---------------- 相对功能/流通性比例项 (决定设备基础效用) ----------------
         # 正向增益 (大容量 / 高配加成)
         if "256G" in text.upper():
-            if "64G" in self.query.upper() or base <= 1600:
+            if "64G" in active_query.upper() or base <= 1600:
                 fair_value *= 1.35  # 256G 相比 64G 价值增益 +35%
                 tags.append("256G高配")
         elif "512G" in text.upper():
             fair_value *= 1.50
             tags.append("512G超大容量")
 
-        if any(k in text for k in ("插卡", "蜂窝", "4G", "5G", "LTE")):
+        if any(k in text for k in ("插卡", "蜂窝", "LTE")) or PAT_CELLULAR.search(text):
             fair_value *= 1.15  # 蜂窝版加成 +15%
             tags.append("蜂窝插卡版")
 
@@ -338,7 +349,7 @@ class PriceValueEngine:
 
         # 负向折损 (合理折价预期)
         # 严重致命故障 / 尸体卡 (不通电/核心坏/上机冰凉，仅剩料板拆颗粒残值 ~15%)
-        if PAT_FATAL_DEFECT.search(clean_defect_text):
+        if PAT_FATAL_DEFECT.search(clean_defect_text) and not parts_or_service_intent:
             fair_value *= 0.15
             tags.append("严重硬件故障/料板尸体")
             if price is not None and price > base * 0.25:
@@ -382,13 +393,14 @@ class PriceValueEngine:
             defect_desc = m_sev.group(0)
             tags.append(f"严重故障({defect_desc})")
 
-        if PAT_ICLOUD_LOCKED.search(text):
+        if PAT_ICLOUD_LOCKED.search(clean_lock_text):
             fair_value = 0.0
             reasons.append("激活锁死/不可用砖头机")
 
-        if PAT_DISPLAY_ONLY.search(text):
+        if PAT_DISPLAY_ONLY.search(clean_display_text):
             fair_value = 0.0
-            reasons.append("纯展示/小作文贴/引流不出")
+            if "纯展示/小作文贴/引流不出" not in reasons:
+                reasons.append("纯展示/小作文贴/引流不出")
 
         if PAT_ABUSIVE_TERMS.search(text):
             reasons.append("高危扣款霸王条款")
@@ -427,7 +439,7 @@ class PriceValueEngine:
                     fair_value = 0.0
 
         # 跨品类完全无关商品污染 (如搜显卡出相机、电池、充电器)
-        if any(k in active_query.upper() for k in ("HX", "3080", "3090", "显卡", "GPU")):
+        if _targets_gpu(active_query):
             if PAT_IRRELEVANT_CATEGORY.search(title) or (
                 PAT_IRRELEVANT_CATEGORY.search(text)
                 and not any(k in text for k in ("显卡", "显存", "算力", "PCI", "GA102", "核芯", "风扇"))
@@ -436,8 +448,14 @@ class PriceValueEngine:
                 fair_value = 0.0
 
         # 配件混淆 (显卡风扇/支架/散热套件混进整卡搜索)
-        if not wants_parts(active_query) and PAT_ACCESSORY_GPU.search(title):
-            if (price is not None and price < 250) and not any(k in text for k in ("带卡", "整卡", "原装显卡")):
+        if _targets_gpu(active_query) and not wants_parts(active_query) and PAT_ACCESSORY_GPU.search(title):
+            looks_like_card = any(k in text for k in ("带卡", "整卡", "原装显卡"))
+            has_card_body = looks_like_card or any(
+                f"{c}G" in title.upper() for c in (8, 10, 11, 12, 16, 20, 24, 48)
+            )
+            cheap_candidate = price is not None and price < 250
+            confirmed_accessory = bool(re.search(r"(?<!不)(?:单卖|单出)|不含显卡|无显卡", title))
+            if (cheap_candidate and not looks_like_card) or (confirmed_accessory and not has_card_body):
                 reasons.append("周边配件/散热器/风扇(非整卡硬件)")
                 fair_value = 0.0
 

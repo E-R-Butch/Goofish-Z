@@ -193,22 +193,23 @@ class LLMArbiter:
         api_key: str | None = None,
         model: str | None = None,
     ):
-        self.base_url = (
-            base_url
-            or os.environ.get("GOOFISH_LLM_BASE_URL")
-            or "http://192.168.31.66:4000/v1"
-        )
-        self.api_key = (
-            api_key
-            or os.environ.get("GOOFISH_LLM_API_KEY")
-            or os.environ.get("HERMES_CUSTOM_192_168_31_66_4000_API_KEY")
-            or ""
-        )
+        self.base_url = (base_url or os.environ.get("GOOFISH_LLM_BASE_URL") or "").strip()
+        self.api_key = (api_key or os.environ.get("GOOFISH_LLM_API_KEY") or "").strip()
+        if self.api_key and not self.base_url:
+            logger.warning(
+                "已设置 GOOFISH_LLM_API_KEY 但缺少 GOOFISH_LLM_BASE_URL：LLM 仲裁已停用 "
+                "(不再内置默认端点，请显式配置 GOOFISH_LLM_BASE_URL)"
+            )
         self.model = (
             model
             or os.environ.get("GOOFISH_LLM_MODEL")
             or "antigravity-gemini-3.8-flash"
         )
+
+    @property
+    def configured(self) -> bool:
+        """必须显式配置端点与密钥才允许调用 LLM (公开安装不携带任何私有默认值)。"""
+        return bool(self.api_key and self.base_url)
 
     def judge_jev(
         self,

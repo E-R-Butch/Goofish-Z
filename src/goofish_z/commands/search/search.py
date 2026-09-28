@@ -39,6 +39,26 @@ def _item_id_from_url(url: str) -> str:
     return m.group(1) if m else ""
 
 
+# 非 GPU 产品线型号（iPhone 15 / iPad mini 6 / 小米14 …）：判断查询是否指向具体型号，
+# 决定是否计算同款中位数并启用 VMI 判定。
+_NON_GPU_MODEL_RE = re.compile(
+    r"(?:iphone|ipad|ipod|imac|macbook|airpods?|apple\s*watch|galaxy|pixel|redmi|honor|huawei|mate|nova|thinkpad|legion|yoga|surface|switch|ps[45]|xbox)"
+    r"(?:\s+(?:mini|air|pro|max|plus|ultra|note|book|series))?[\s\-]*\d{1,2}(?!\d)"
+    r"|[\u4e00-\u9fff]{2,4}[\s\-]*\d{1,2}(?!\d)",
+    re.IGNORECASE,
+)
+
+
+def _mentions_specific_product(query: str) -> bool:
+    """查询是否指向具体型号/规格（决定是否计算同款中位数并启用 VMI 判定）。"""
+    from goofish_z.search_quality import extract_gpu_models
+
+    q = str(query or "")
+    if extract_gpu_models(q) or re.search(r"\d{3,4}|\d+G", q, re.IGNORECASE):
+        return True
+    return bool(_NON_GPU_MODEL_RE.search(q))
+
+
 def _build_search_url(query: str) -> str:
     from urllib.parse import quote
     return f"https://www.goofish.com/search?q={quote(query)}"
@@ -335,6 +355,8 @@ def search(
     if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= MAX_PAGE:
         raise ValueError(f"页码必须是 1 到 {MAX_PAGE} 的整数")
     validate_sort(sort)
+    if min_price is not None and max_price is not None and min_price > max_price:
+        raise ValueError(f"min_price({min_price}) 不能大于 max_price({max_price})，请检查价格区间")
     guard_check()
     rate_check("search")
     args = (str(query).strip(), _normalize_limit(limit), page)
@@ -347,14 +369,11 @@ def search(
     if filter_low_value:
         from goofish_z.price_value_engine import PriceValueEngine
         from goofish_z.core.price import price_value
-        from goofish_z.search_quality import extract_gpu_models
 
         raw_prices = [p for it in items if (p := price_value(it.get("price"))) is not None]
         # 仅在查询包含具体型号/规格（如 90HX, 3080, 4090 或具体显存）时计算同款中位数
         # 对宽泛搜索（如单纯搜“显卡”、“手机”），不强制计算跨型号混合中位数，避免高档商品被低端混杂池误杀
-        has_specific_model = bool(extract_gpu_models(query)) or bool(
-            re.search(r"\d{3,4}|\d+G", str(query), re.IGNORECASE)
-        )
+        has_specific_model = _mentions_specific_product(query)
         batch_median = (sorted(raw_prices)[len(raw_prices) // 2]) if (raw_prices and has_specific_model) else None
 
         pv_engine = PriceValueEngine()
@@ -395,7 +414,10 @@ def search(
         for it in result.get("items", []):
             p = price_value(it.get("price"))
             if p is None:
-                passed_price.append(it)
+                result.setdefault("blocked", []).append(
+                    _filtered_item(it, ["价格未知/面议，无法验证是否满足价格区间"])
+                )
+                result["blocked_count"] = result.get("blocked_count", 0) + 1
                 continue
             if min_price is not None and p < min_price:
                 result.setdefault("blocked", []).append(_filtered_item(it, [f"低于设定的最底价 {min_price}"]))

@@ -93,7 +93,7 @@ class TestLowValueClassifier(unittest.TestCase):
         from goofish_z.llm_arbiter import LLMArbiter
         from unittest.mock import patch
 
-        arbiter = LLMArbiter(api_key="mock_key")
+        arbiter = LLMArbiter(api_key="mock_key", base_url="http://mock-llm.invalid/v1")
 
         # 1. 状态码超出 0~4 范围时返回 None (降级回退本地规则)
         with patch("urllib.request.urlopen") as mock_url:
@@ -123,7 +123,7 @@ class TestLowValueClassifier(unittest.TestCase):
         from goofish_z.llm_arbiter import LLMArbiter
         from unittest.mock import patch
 
-        arbiter = LLMArbiter(api_key="mock_key")
+        arbiter = LLMArbiter(api_key="mock_key", base_url="http://mock-llm.invalid/v1")
         # 用户显式搜索“4090租赁”，返回 t=2 时不应拦截
         with patch("urllib.request.urlopen") as mock_url:
             mock_url.return_value.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"{\\"t\\":2,\\"p\\":0,\\"m\\":0}"}}]}'
@@ -149,6 +149,98 @@ class TestLowValueClassifier(unittest.TestCase):
         item = {"title": "微星 RTX4090 超龙 24G 显卡 箱说全 功能正常", "price": "12000"}
         assessment = pv.assess(item, query="显卡", batch_median=None)
         self.assertFalse(assessment.is_blocked)
+
+
+class TestPriceValueEngineReview(unittest.TestCase):
+    """Codex PR#6 复审修复回归：每条对应一个曾被误杀/漏网的场景。"""
+
+    def setUp(self):
+        from goofish_z.price_value_engine import PriceValueEngine
+        self.engine = PriceValueEngine()
+
+    def _assess(self, title, price, query, batch_median=None):
+        return self.engine.assess(
+            {"title": title, "price": price}, query=query, batch_median=batch_median
+        )
+
+    def test_negated_id_lock_not_blocked_but_real_lock_is(self):
+        ok = self._assess("iPad mini 6 64G 没有ID锁 全功能正常", "¥1800", "iPad mini 6", 1800)
+        self.assertFalse(ok.is_blocked)
+        locked = self._assess("iPad mini 6 64G 有ID锁 无法还原", "¥800", "iPad mini 6", 1800)
+        self.assertTrue(locked.is_blocked)
+        self.assertTrue(any("激活锁" in r for r in locked.reasons))
+
+    def test_camera_listing_not_cross_category_blocked(self):
+        res = self._assess("索尼 A7M4 全画幅数码相机 机身 99新", "¥9999", "索尼 A7M4")
+        self.assertFalse(res.is_blocked)
+
+    def test_non_gpu_search_not_blocked_by_accessory_rule(self):
+        res = self._assess("iPhone 8 64G 包装盒齐全 功能正常", "¥200", "iPhone 8")
+        self.assertFalse(res.is_blocked)
+
+    def test_confirmed_expensive_accessory_blocked(self):
+        res = self._assess("RTX4090 显卡水冷头 单卖", "¥500", "显卡")
+        self.assertTrue(res.is_blocked)
+        self.assertTrue(any("配件" in r for r in res.reasons))
+
+    def test_card_mentioning_accessory_not_blocked(self):
+        res = self._assess("RTX3080 24G 显卡 换好硅脂 附原装散热器 功能正常", "¥1400", "3080")
+        self.assertFalse(res.is_blocked)
+
+    def test_ai_host_machine_variants_blocked(self):
+        for title in ("AI主机 RTX4090 整机出", "AI 主机 RTX4090 整机出"):
+            with self.subTest(title=title):
+                res = self._assess(title, "¥4000", "RTX4090")
+                self.assertTrue(res.is_blocked)
+                self.assertTrue(any("整机" in r for r in res.reasons))
+
+    def test_marketing_negation_not_blocked(self):
+        res = self._assess("RTX4090 出 不卖假货 只出正品 箱说全", "¥9000", "RTX4090")
+        self.assertFalse(res.is_blocked)
+
+    def test_capacity_numbers_do_not_trigger_cellular_premium(self):
+        gpu = self._assess("RTX4090 24G 显卡 三风扇", "¥1700", "4090", 1000)
+        self.assertNotIn("蜂窝插卡版", gpu.tags)
+        ipad = self._assess("iPad mini 6 256G 4G版 全功能正常", "¥2300", "iPad mini 6", 2000)
+        self.assertIn("蜂窝插卡版", ipad.tags)
+
+    def test_parts_query_keeps_target_listings(self):
+        wanted = self._assess("RTX4090 料板 无核心 供拆件", "¥200", "4090料板")
+        self.assertFalse(wanted.is_blocked)
+        normal = self._assess("RTX4090 料板 无核心 供拆件", "¥200", "4090")
+        self.assertTrue(normal.is_blocked)
+
+    def test_mod_adjustments_use_active_query(self):
+        res = self._assess("RTX3080 20G 改4090散热 3090底板 功能正常", "¥2999", "3080 20G", 3000)
+        self.assertTrue(any("4090巨型散热总成" in t for t in res.tags))
+        self.assertTrue(any("3090级豪华供电PCB" in t for t in res.tags))
+
+    def test_capacity_upgrade_rule_uses_active_query(self):
+        res = self._assess("iPad mini 6 256G 国行 全功能正常", "¥2300", "iPad mini 6 64G", 1800)
+        self.assertIn("256G高配", res.tags)
+
+    def test_llm_arbiter_requires_explicit_endpoint(self):
+        from goofish_z.llm_arbiter import LLMArbiter
+        self.assertFalse(LLMArbiter().configured)
+        self.assertFalse(LLMArbiter(api_key="mock_key").configured)
+        self.assertTrue(LLMArbiter(base_url="http://mock-llm.invalid/v1", api_key="mock_key").configured)
+
+
+class TestLegacyClassifierParity(unittest.TestCase):
+    def setUp(self):
+        self.clf = LowValueClassifier(strict_model_match=True)
+
+    def test_negated_id_lock_phrase_not_blocked(self):
+        res = self.clf.evaluate({"title": "iPad mini 6 64G 没有ID锁 全功能正常", "price": "¥1800"}, query="iPad mini 6")
+        self.assertFalse(res.is_low_value)
+
+    def test_capacity_numbers_do_not_trigger_cellular_tag(self):
+        res = self.clf.evaluate({"title": "iPad mini 6 256G 国行 全功能正常", "price": "¥2300"}, query="iPad mini 6")
+        self.assertNotIn("蜂窝插卡版", res.tags)
+
+    def test_explicit_4g_marker_adds_cellular_tag(self):
+        res = self.clf.evaluate({"title": "iPad mini 6 256G 4G版 全功能正常", "price": "¥2300"}, query="iPad mini 6")
+        self.assertIn("蜂窝插卡版", res.tags)
 
 
 if __name__ == "__main__":

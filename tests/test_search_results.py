@@ -210,3 +210,42 @@ class SearchResultsTest(OfflineCase):
             with self.assertRaises(AuthRequiredError):
                 asyncio.run(self.search._go_to_page(page, 2))
             reserve.assert_not_awaited()
+
+    def test_impossible_price_range_is_rejected_before_search(self):
+        with self.assertRaises(ValueError):
+            self.search.search("synthetic", min_price=100, max_price=50)
+        self.assertFalse(self.limiter.STATE_PATH.exists())
+
+    def test_price_fence_excludes_unknown_prices(self):
+        fetched = {"items": [
+            fixture("600", item_id="synthetic-known", title="合成iPhone 15 功能正常"),
+            fixture("面议", item_id="synthetic-negotiable", title="合成iPhone 15 面议"),
+        ], "page": 1, "source_count": 2, "has_next": False}
+        with patch.object(self.search, "_run", AsyncMock(return_value=fetched)):
+            result = self.search.search("iPhone 15", min_price=500, max_price=2000)
+        self.assertEqual([it["item_id"] for it in result["items"]], ["synthetic-known"])
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["blocked_count"], 1)
+        self.assertEqual(result["blocked"][0]["item_id"], "synthetic-negotiable")
+        self.assertIn("价格未知", result["blocked"][0]["reasons"][0])
+
+    def test_short_product_models_count_as_specific_queries(self):
+        for value in ("iPhone 15", "iPad mini 6", "小米14", "RTX4090", "90HX", "DDR4 32G"):
+            with self.subTest(value=value):
+                self.assertTrue(self.search._mentions_specific_product(value))
+        for value in ("显卡", "投影仪", "电脑主机"):
+            with self.subTest(value=value):
+                self.assertFalse(self.search._mentions_specific_product(value))
+
+    def test_short_model_query_enables_price_value_filtering(self):
+        fetched = {"items": [
+            fixture("1500", item_id="synthetic-normal-a", title="合成iPhone 15 功能正常"),
+            fixture("1500", item_id="synthetic-normal-b", title="合成iPhone 15 功能正常"),
+            fixture("6000", item_id="synthetic-overpriced", title="合成iPhone 15 指纹坏 功能正常"),
+        ], "page": 1, "source_count": 3, "has_next": False}
+        with patch.object(self.search, "_run", AsyncMock(return_value=fetched)):
+            result = self.search.search("iPhone 15")
+        self.assertEqual({it["item_id"] for it in result["items"]},
+                         {"synthetic-normal-a", "synthetic-normal-b"})
+        detail = next(it for it in result["filtered"] if it["item_id"] == "synthetic-overpriced")
+        self.assertTrue(any("价格与价值严重不匹配" in reason for reason in detail["reasons"]))

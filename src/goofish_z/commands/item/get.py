@@ -18,13 +18,29 @@ _DETAIL_FIELDS = (
 )
 
 
+def _sku_price_yuan(sku: dict[str, Any]) -> float:
+    """按来源字段解析 SKU 价格：price 为元，priceInCent 为分（不再按数值大小猜单位）。"""
+    raw_yuan = sku.get("price")
+    if raw_yuan not in (None, ""):
+        try:
+            return float(raw_yuan)
+        except (TypeError, ValueError):
+            return 0.0
+    raw_cents = sku.get("priceInCent")
+    if raw_cents not in (None, ""):
+        try:
+            return float(raw_cents) / 100.0
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
 def _extract_skus(item: dict[str, Any]) -> list[dict[str, Any]]:
     """提取商品多 SKU 真实规格矩阵 (规格名、真实到手价、库存)。"""
     raw_list = item.get("skuList") or item.get("idleItemSkuList") or []
     results = []
     for s in raw_list:
-        price_val = s.get("price") or s.get("priceInCent") or 0
-        price_yuan = float(price_val) / 100.0 if float(price_val) > 1000 else float(price_val)
+        price_yuan = _sku_price_yuan(s)
         props = []
         for prop in s.get("propertyList", []):
             txt = prop.get("actualValueText") or prop.get("valueText") or ""
