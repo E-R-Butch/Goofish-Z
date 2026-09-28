@@ -59,6 +59,39 @@ def _mentions_specific_product(query: str) -> bool:
     return bool(_NON_GPU_MODEL_RE.search(q))
 
 
+# 中位数样本过滤：低价配件样本与不同变体样本不参与基准推导 (防止脏样本拉偏大盘)
+_MEDIAN_NOISE_RE = re.compile(
+    r"(?:手机壳|保护壳|保护套|手机套|硅胶套|清水套|钢化膜|贴膜|手机膜|镜头膜|支架|挂绳|手机链|腕带|表带|"
+    r"数据线|充电线|充电头|充电器|空盒|包装盒|说明书|贴纸|外壳|屏幕总成|拆机屏|"
+    r"散热器|散热模组|散热风扇|水冷头|延长线|转接线|空板|料板|无核心|无显存|背板|挡板)",
+    re.IGNORECASE,
+)
+_VARIANT_TOKEN_RE = re.compile(r"(?:^|[^a-z])(pro|max|plus|ultra|mini|air)(?:[^a-z]|$)", re.IGNORECASE)
+
+
+def _median_candidates(query: str, entries: list[tuple[dict, float]]) -> list[tuple[dict, float]]:
+    """只从可比样本推导同款基准：剔除明显低价配件样本；查询带变体词时只取同变体样本。"""
+    if len(entries) >= 4:
+        prices = sorted(p for _, p in entries)
+        p75 = prices[min(len(prices) - 1, int(len(prices) * 0.75))]
+        floor = p75 * 0.30
+        entries = [
+            (it, p)
+            for it, p in entries
+            if not (p < floor and _MEDIAN_NOISE_RE.search(str(it.get("title", ""))))
+        ]
+    variants = [v.lower() for v in _VARIANT_TOKEN_RE.findall(str(query))]
+    if variants:
+        same_variant = [
+            (it, p)
+            for it, p in entries
+            if all(v in str(it.get("title", "")).lower() for v in variants)
+        ]
+        if same_variant:
+            entries = same_variant
+    return entries
+
+
 def _build_search_url(query: str) -> str:
     from urllib.parse import quote
     return f"https://www.goofish.com/search?q={quote(query)}"
@@ -370,11 +403,20 @@ def search(
         from goofish_z.price_value_engine import PriceValueEngine
         from goofish_z.core.price import price_value
 
-        raw_prices = [p for it in items if (p := price_value(it.get("price"))) is not None]
+        price_entries = []
+        for it in items:
+            p = price_value(it.get("price"))
+            if p is not None:
+                price_entries.append((it, p))
         # 仅在查询包含具体型号/规格（如 90HX, 3080, 4090 或具体显存）时计算同款中位数
         # 对宽泛搜索（如单纯搜“显卡”、“手机”），不强制计算跨型号混合中位数，避免高档商品被低端混杂池误杀
+        # 基准只从可比样本推导：剔除低价配件样本；查询带变体词时只取同变体样本
         has_specific_model = _mentions_specific_product(query)
-        batch_median = (sorted(raw_prices)[len(raw_prices) // 2]) if (raw_prices and has_specific_model) else None
+        batch_median = None
+        if price_entries and has_specific_model:
+            candidates = _median_candidates(str(query), price_entries)
+            med_prices = sorted(p for _, p in candidates)
+            batch_median = med_prices[len(med_prices) // 2]
 
         pv_engine = PriceValueEngine()
         filtered = []

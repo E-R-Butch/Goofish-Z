@@ -249,3 +249,38 @@ class SearchResultsTest(OfflineCase):
                          {"synthetic-normal-a", "synthetic-normal-b"})
         detail = next(it for it in result["filtered"] if it["item_id"] == "synthetic-overpriced")
         self.assertTrue(any("价格与价值严重不匹配" in reason for reason in detail["reasons"]))
+
+    def test_median_ignores_cheap_accessories_and_phones_survive(self):
+        fetched = {"items": [
+            fixture("15", item_id="synthetic-case", title="合成iPhone 15 手机壳 全新未拆"),
+            fixture("9", item_id="synthetic-film", title="合成iPhone 15 钢化膜 2片装"),
+            fixture("25", item_id="synthetic-cover", title="合成iPhone 15 保护套 硅胶"),
+            fixture("29", item_id="synthetic-stand", title="合成iPhone 15 手机支架 桌面"),
+            fixture("45", item_id="synthetic-cable", title="合成iPhone 15 数据线 快充线"),
+            fixture("2600", item_id="synthetic-phone-a", title="合成iPhone 15 128G 功能正常"),
+            fixture("2800", item_id="synthetic-phone-b", title="合成iPhone 15 128G 国行 电池91"),
+            fixture("3000", item_id="synthetic-phone-c", title="合成iPhone 15 128G 成色新 无拆修磕碰"),
+        ], "page": 1, "source_count": 8, "has_next": False}
+        with patch.object(self.search, "_run", AsyncMock(return_value=fetched)):
+            result = self.search.search("iPhone 15")
+        kept = {it["item_id"] for it in result["items"]}
+        for phone in ("synthetic-phone-a", "synthetic-phone-b", "synthetic-phone-c"):
+            self.assertIn(phone, kept)
+        vmi = next(it["vmi"] for it in result["items"] if it["item_id"] == "synthetic-phone-a")
+        self.assertGreater(vmi, 0.9)
+        self.assertEqual(result["blocked_count"], 0)
+
+    def test_variant_query_excludes_other_variants_from_median(self):
+        fetched = {"items": [
+            fixture("3000", item_id="synthetic-base-a", title="合成iPhone 15 128G 功能正常"),
+            fixture("3000", item_id="synthetic-base-b", title="合成iPhone 15 128G 国行 电池91"),
+            fixture("3100", item_id="synthetic-base-c", title="合成iPhone 15 128G 成色新"),
+            fixture("6000", item_id="synthetic-pro-a", title="合成iPhone 15 Pro 256G 功能正常"),
+            fixture("6200", item_id="synthetic-pro-b", title="合成iPhone 15 Pro 256G 国行"),
+        ], "page": 1, "source_count": 5, "has_next": False}
+        with patch.object(self.search, "_run", AsyncMock(return_value=fetched)):
+            result = self.search.search("iPhone 15 Pro")
+        kept = {it["item_id"] for it in result["items"]}
+        self.assertIn("synthetic-pro-a", kept)
+        self.assertIn("synthetic-pro-b", kept)
+        self.assertIn("synthetic-base-a", kept)

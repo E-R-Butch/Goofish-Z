@@ -94,6 +94,15 @@ PAT_FATAL_DEFECT = re.compile(
     re.IGNORECASE,
 )
 
+# 标题自述的非完整售价信号：只有这类确证信息才允许据低价拦截 (README: 低价本身仅观察提示)
+PAT_PRICE_DISCLAIMER = re.compile(
+    r"(?:标价|价格|售价)(?:为|是|仅为|只是|仅是)?\s*(?:定金|订金|押金|占位|引流|非实价)"
+    r"|(?:仅|只)(?:收|拍|付|售)\s*(?:定金|订金|押金)"
+    r"|(?:定金|订金|押金)(?:链接|专拍|勿当全款)"
+    r"|(?:非实价|虚标价|引流价|拍前问价|勿直接拍|不要直接拍|补差价|尾款|拍下改价)",
+    re.IGNORECASE,
+)
+
 # 6. MDM / 企业监管机
 PAT_MDM = re.compile(r"(?:企业管理机|配置锁|监管锁|MDM|绕过ID|屏蔽更新|防抹除|点抹除返回)", re.IGNORECASE)
 
@@ -108,6 +117,18 @@ def _targets_gpu(query: str) -> bool:
     """查询是否面向显卡单卡；跨品类与配件规则只允许在显卡搜索里生效。"""
     q = str(query or "")
     return bool(extract_gpu_models(q)) or any(k in q.upper() for k in ("显卡", "GPU", "HX"))
+
+
+def _requested_capacity_gb(query: str) -> int:
+    """查询中明确要求的最大存储容量 (GB)；用于避免对查询已要求的容量重复加成。"""
+    q = str(query or "").upper()
+    values = [
+        int(x)
+        for x in re.findall(r"(\d{2,4})\s*G(?:B)?\b", q)
+        if int(x) in (16, 32, 64, 128, 256, 512)
+    ]
+    values += [int(x) * 1024 for x in re.findall(r"(\d+)\s*T(?:B)?\b", q)]
+    return max(values) if values else 0
 
 
 @dataclass
@@ -223,7 +244,13 @@ class PriceValueEngine:
         # 3. 混合协同仲裁 (Hybrid Escalation to LLM):
         # 仅在免费正则出现「存疑/争议/深水大漏/多SKU复杂」时才调用 LLM
         # -------------------------------------------------------------
-        if self.enable_llm and self.arbiter and self.arbiter.configured and not is_definitive_blocked:
+        if (
+            self.enable_llm
+            and self.arbiter
+            and self.arbiter.configured
+            and not is_definitive_blocked
+            and _targets_gpu(active_query)  # JEV 状态机为显卡语义；非显卡搜索不做 LLM 升级
+        ):
             escalate = False
             escalate_reason = ""
 
@@ -329,14 +356,16 @@ class PriceValueEngine:
             tags.append("风扇异响(-¥40更换成本)")
 
         # ---------------- 相对功能/流通性比例项 (决定设备基础效用) ----------------
-        # 正向增益 (大容量 / 高配加成)
+        # 正向增益 (大容量 / 高配加成)；查询已明确要求同档容量时不再重复加成 (基准已是同档样本)
+        requested_capacity = _requested_capacity_gb(active_query)
         if "256G" in text.upper():
-            if "64G" in active_query.upper() or base <= 1600:
+            if requested_capacity < 256 and ("64G" in active_query.upper() or base <= 1600):
                 fair_value *= 1.35  # 256G 相比 64G 价值增益 +35%
                 tags.append("256G高配")
         elif "512G" in text.upper():
-            fair_value *= 1.50
-            tags.append("512G超大容量")
+            if requested_capacity < 512:
+                fair_value *= 1.50
+                tags.append("512G超大容量")
 
         if any(k in text for k in ("插卡", "蜂窝", "LTE")) or PAT_CELLULAR.search(text):
             fair_value *= 1.15  # 蜂窝版加成 +15%
@@ -355,11 +384,15 @@ class PriceValueEngine:
             if price is not None and price > base * 0.25:
                 reasons.append(f"严重致命故障(不通电/尸体卡)，但标价¥{price:.0f}远超料板残值")
 
-        # 无故障声明却虚标超低引流价 (如声称功能完好无拆修却标333，远低于大盘残值)
-        if price is not None and price < base * 0.45 and not PAT_FATAL_DEFECT.search(clean_defect_text) and not PAT_STRICT_NO_RETAIL.search(text):
-            if any(k in text for k in ("功能完好", "包测试", "成色美丽", "无拆无修", "正常使用")):
-                reasons.append(f"虚标低价/定金引流贴(声称完好却标¥{price:.0f}远低于市场行情¥{base:.0f})")
+        # 低价处理原则 (README)：低价本身只是观察信号，不能据此认定引流；
+        # 只有标题自述「定金/非实价/拍前问价」等确证信息时，才允许按低价拦截。
+        if price is not None and has_baseline and base >= 500.0 and price < base * 0.45:
+            clean_price_text = re.sub(r"(?:不是|非|不收|无)(?:引流价|定金|订金|押金)", "", text)
+            if PAT_PRICE_DISCLAIMER.search(clean_price_text):
+                reasons.append(f"虚标低价/定金引流贴(标题自述非完整售价，标价¥{price:.0f}，大盘¥{base:.0f})")
                 fair_value = 0.0
+            elif not PAT_FATAL_DEFECT.search(clean_defect_text) and not PAT_STRICT_NO_RETAIL.search(text):
+                tags.append(f"观察:标价¥{price:.0f}远低于大盘¥{base:.0f}(未核实)")
 
         # 批发与大批量货源判定:
         # 实战原则——不要因打包而完全拦截！只要是真实正确的硬件商品，把选择权交给使用者。
@@ -459,13 +492,11 @@ class PriceValueEngine:
                 reasons.append("周边配件/散热器/风扇(非整卡硬件)")
                 fair_value = 0.0
 
-        # 极端超低价引流陷阱 (如标 1 元、9.9 元、19 元求带价来谈/定金/小配件)
-        if price is not None and price <= 50.0 and base >= 500.0:
-            reasons.append(f"超低价引流定金贴(标价¥{price:.0f}远低于基准¥{base:.0f})")
-            fair_value = 0.0
+        # (极端超低价不再单独硬拦；与上方「低价处理原则」统一：无确证信息只做观察提示)
 
-        # 搜显卡单卡时整机混入引流
-        if PAT_HOST_MACHINE.search(title) and any(
+        # 搜显卡单卡时整机混入引流；查询本身就在找主机/整机时保留整机结果
+        query_wants_host = bool(re.search(r"主机|整机|台式|工作站|全套", active_query))
+        if not query_wants_host and PAT_HOST_MACHINE.search(title) and any(
             k in active_query.upper()
             for k in ("HX", "3060", "3070", "3080", "3090", "4060", "4070", "4080", "4090", "5080", "5090", "显卡", "GPU")
         ):

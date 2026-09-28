@@ -226,6 +226,48 @@ class TestPriceValueEngineReview(unittest.TestCase):
         self.assertTrue(LLMArbiter(base_url="http://mock-llm.invalid/v1", api_key="mock_key").configured)
 
 
+    def test_host_query_keeps_whole_systems(self):
+        kept = self._assess("RTX4090 海景房台式主机整机 游戏水冷", "¥4000", "4090主机")
+        self.assertFalse(kept.is_blocked)
+        blocked = self._assess("RTX4090 海景房台式主机整机 游戏水冷", "¥4000", "RTX4090")
+        self.assertTrue(blocked.is_blocked)
+        self.assertTrue(any("整机" in r for r in blocked.reasons))
+
+    def test_working_bargain_not_bait_but_disclaimer_is(self):
+        hint = self._assess("iPhone 15 128G 功能完好 无拆无修 正常使用", "¥1000", "iPhone 15", 3000)
+        self.assertFalse(hint.is_blocked)
+        self.assertTrue(any(t.startswith("观察:") for t in hint.tags))
+        bait = self._assess("iPhone 15 128G 标价为定金 拍前联系", "¥1000", "iPhone 15", 3000)
+        self.assertTrue(bait.is_blocked)
+        self.assertTrue(any("定金" in r for r in bait.reasons))
+
+    def test_low_price_alone_is_observation_hint(self):
+        res = self._assess("RTX4090 24G 急出 功能正常", "¥30", "4090", 1000)
+        self.assertFalse(res.is_blocked)
+        self.assertTrue(any(t.startswith("观察:") for t in res.tags))
+
+    def test_storage_premium_not_reapplied_for_requested_capacity(self):
+        requery = self._assess("iPhone 15 512G 国行 功能正常", "¥8000", "iPhone 15 512G", 5000)
+        self.assertNotIn("512G超大容量", requery.tags)
+        self.assertTrue(requery.is_blocked)
+        upgrade = self._assess("iPad mini 6 512G 功能正常", "¥2300", "iPad mini 6 64G", 1800)
+        self.assertIn("512G超大容量", upgrade.tags)
+        self.assertFalse(upgrade.is_blocked)
+
+    def test_llm_escalation_only_for_gpu_queries(self):
+        from unittest.mock import Mock
+        from goofish_z.price_value_engine import PriceValueEngine
+        engine = PriceValueEngine(enable_llm=True)
+        fake = Mock()
+        fake.configured = True
+        fake.judge_jev = Mock(return_value=None)
+        engine.arbiter = fake
+        engine.assess({"title": "iPhone 15 128G 2000出", "price": "¥2000"}, query="iPhone 15", batch_median=3000)
+        fake.judge_jev.assert_not_called()
+        engine.assess({"title": "RTX4090 24G 1600 急出 功能正常", "price": "¥1600"}, query="RTX4090", batch_median=3000)
+        fake.judge_jev.assert_called()
+
+
 class TestLegacyClassifierParity(unittest.TestCase):
     def setUp(self):
         self.clf = LowValueClassifier(strict_model_match=True)
