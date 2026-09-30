@@ -12,7 +12,47 @@ _DETAIL_FIELDS = (
     "itemStatusStr",
     "itemLabelExtList",
     "imageInfos",
+    "minPrice",
+    "maxPrice",
+    "skuList",
 )
+
+
+def _sku_price_yuan(sku: dict[str, Any]) -> float:
+    """按来源字段解析 SKU 价格：price 为元，priceInCent 为分（不再按数值大小猜单位）。"""
+    raw_yuan = sku.get("price")
+    if raw_yuan not in (None, ""):
+        try:
+            return float(raw_yuan)
+        except (TypeError, ValueError):
+            return 0.0
+    raw_cents = sku.get("priceInCent")
+    if raw_cents not in (None, ""):
+        try:
+            return float(raw_cents) / 100.0
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
+def _extract_skus(item: dict[str, Any]) -> list[dict[str, Any]]:
+    """提取商品多 SKU 真实规格矩阵 (规格名、真实到手价、库存)。"""
+    raw_list = item.get("skuList") or item.get("idleItemSkuList") or []
+    results = []
+    for s in raw_list:
+        price_yuan = _sku_price_yuan(s)
+        props = []
+        for prop in s.get("propertyList", []):
+            txt = prop.get("actualValueText") or prop.get("valueText") or ""
+            if txt:
+                props.append(txt)
+        results.append({
+            "sku_id": str(s.get("skuId") or ""),
+            "name": " / ".join(props) if props else "默认规格",
+            "price": price_yuan,
+            "quantity": int(s.get("quantity") or 0),
+        })
+    return results
 
 
 def _consumer_detail(item: dict[str, Any]) -> dict[str, Any]:
@@ -44,12 +84,18 @@ def get(item_id: str) -> dict[str, Any]:
     seller = data.get("sellerDO", {}) or {}
     track = data.get("trackParams", {}) or {}
     price = item.get("soldPrice") or item.get("defaultPrice") or track.get("soldPrice") or track.get("price", "")
+    min_p = item.get("minPrice")
+    max_p = item.get("maxPrice")
+    p_range = f"¥{min_p} ~ ¥{max_p}" if min_p and max_p and str(min_p) != str(max_p) else ""
+
     return {
         "item_id": str(item.get("itemId") or track.get("id") or item_id),
         "title": item.get("title") or track.get("title", ""),
         "price": f"¥{price}" if price and not str(price).startswith("¥") else price,
+        "price_range": p_range,
         "seller_nick": seller.get("nick") or seller.get("uniqueName") or track.get("seller_nick", ""),
         "status": item.get("itemStatusStr") or track.get("itemStatus", ""),
+        "skus": _extract_skus(item),
         "detail": _consumer_detail(item),
         "raw": raw,
     }

@@ -56,7 +56,7 @@ class SearchMatchingTest(OfflineCase):
             fixture(item_id="synthetic-bait", title="合成4090-24/48G 4090D-24/48G涡轮"),
             fixture(item_id="synthetic-wrong-capacity", title="合成4090 24G显卡"),
             fixture(item_id="synthetic-wrong-model", title="合成4090D-48G涡轮"),
-            fixture("1", item_id="synthetic-low-price", title="合成4090 48G显卡"),
+            fixture("50", item_id="synthetic-low-price", title="合成4090 48G显卡"),
         ], "page": 1, "source_count": 5, "has_next": True}
         with patch.object(self.search, "_run", AsyncMock(return_value=fetched)):
             result = self.search.search("4090 48G")

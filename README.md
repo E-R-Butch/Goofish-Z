@@ -52,6 +52,9 @@ Web 面板为 `http://127.0.0.1:8787`。MCP 入口是 `.venv/bin/goofish-z-mcp`�
 浏览器导入按名称、域名和路径保留 Cookie；HTTP 调用选择对应闲鱼域的凭证，刷新
 不会擦除其他域的条目。旧版本导入过的缓存可重新运行 `auth login --browser chrome`
 补齐来源信息。首页能返回商品不等同于翻页已通过登录校验。
+缓存存在但关键 Cookie 缺失或已过期时，也会尝试从 Chrome 恢复一次；浏览器仍需
+有有效登录态。自动恢复不会切换到与缓存不同的账号，也不会用不完整 Cookie 覆盖缓存。
+`GOOFISH_NO_CHROME_BOOTSTRAP=1` 可禁用自动浏览器恢复。
 需要其他导入方式时运行 `auth login --help`。
 
 ## 闲鱼原生排序

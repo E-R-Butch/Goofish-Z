@@ -39,6 +39,81 @@ def _item_id_from_url(url: str) -> str:
     return m.group(1) if m else ""
 
 
+# 非 GPU 产品线型号（iPhone 15 / iPad mini 6 / 小米14 …）：判断查询是否指向具体型号，
+# 决定是否计算同款中位数并启用 VMI 判定。
+_NON_GPU_MODEL_RE = re.compile(
+    r"(?:iphone|ipad|ipod|imac|macbook|airpods?|apple\s*watch|galaxy|pixel|redmi|honor|huawei|mate|nova|thinkpad|legion|yoga|surface|switch|ps[45]|xbox)"
+    r"(?:\s+(?:mini|air|pro|max|plus|ultra|note|book|series))?[\s\-]*\d{1,2}(?!\d)"
+    r"|[\u4e00-\u9fff]{2,4}[\s\-]*\d{1,2}(?![\dGgTt])",
+    re.IGNORECASE,
+)
+
+
+def _mentions_specific_product(query: str) -> bool:
+    """查询是否指向具体型号/规格（决定是否计算同款中位数并启用 VMI 判定）。
+
+    仅认可真实型号 token（显卡型号正则 / 产品线型号正则）；纯容量或裸数字
+    （如「显卡 24G」「512G 手机」）不足以启用单一基准——不同机型混在同一
+    池里会互相拉偏基准，误杀高价正常商品。
+    """
+    from goofish_z.search_quality import extract_gpu_models
+
+    q = str(query or "")
+    if extract_gpu_models(q):
+        return True
+    return bool(_NON_GPU_MODEL_RE.search(q))
+
+
+# 中位数样本过滤：低价配件样本与不同变体样本不参与基准推导 (防止脏样本拉偏大盘)
+_MEDIAN_NOISE_RE = re.compile(
+    r"(?:手机壳|保护壳|保护套|手机套|硅胶套|清水套|钢化膜|贴膜|手机膜|镜头膜|支架|挂绳|手机链|腕带|表带|"
+    r"数据线|充电线|充电头|充电器|空盒|包装盒|说明书|贴纸|外壳|屏幕总成|拆机屏|"
+    r"散热器|散热模组|散热风扇|水冷头|延长线|转接线|空板|料板|无核心|无显存|背板|挡板)",
+    re.IGNORECASE,
+)
+_VARIANT_TOKEN_RE = re.compile(r"(?:^|[^a-z])(pro|max|plus|ultra|mini|air)(?:[^a-z]|$)", re.IGNORECASE)
+
+
+def _non_gpu_product_key(text: str) -> str:
+    """非 GPU 产品线的「型号+代数」键 (iPhone 15 / 小米14 / iPad mini 6)，用于基准分池。"""
+    m = _NON_GPU_MODEL_RE.search(str(text or ""))
+    if not m:
+        return ""
+    return re.sub(r"[\s\-]+", "", m.group(0)).lower()
+
+
+def _median_candidates(query: str, entries: list[tuple[dict, float]]) -> list[tuple[dict, float]]:
+    """只从可比样本推导同款基准：剔除明显低价配件样本；不同型号/代数样本不混池；查询带变体词时只取同变体样本。"""
+    if len(entries) >= 4:
+        prices = sorted(p for _, p in entries)
+        p75 = prices[min(len(prices) - 1, int(len(prices) * 0.75))]
+        floor = p75 * 0.30
+        entries = [
+            (it, p)
+            for it, p in entries
+            if not (p < floor and _MEDIAN_NOISE_RE.search(str(it.get("title", ""))))
+        ]
+    requested_key = _non_gpu_product_key(query)
+    if requested_key:
+        same_model = [
+            (it, p)
+            for it, p in entries
+            if _non_gpu_product_key(str(it.get("title", ""))) == requested_key
+        ]
+        if same_model:
+            entries = same_model
+    variants = [v.lower() for v in _VARIANT_TOKEN_RE.findall(str(query))]
+    if variants:
+        same_variant = [
+            (it, p)
+            for it, p in entries
+            if all(v in str(it.get("title", "")).lower() for v in variants)
+        ]
+        if same_variant:
+            entries = same_variant
+    return entries
+
+
 def _build_search_url(query: str) -> str:
     from urllib.parse import quote
     return f"https://www.goofish.com/search?q={quote(query)}"
@@ -316,7 +391,16 @@ def filter_search_items(query: str, items: list[dict[str, Any]]) -> tuple[list[d
     strategy=Strategy.COOKIE,
     columns=["rank", "item_id", "title", "price", "condition", "brand", "location", "badge", "url"],
 )
-def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int = 1, sort: str = "default") -> dict[str, Any]:
+def search(
+    query: str,
+    limit: int = 20,
+    filter_blacklist: bool = True,
+    page: int = 1,
+    sort: str = "default",
+    min_price: float | None = None,
+    max_price: float | None = None,
+    filter_low_value: bool = True,
+) -> dict[str, Any]:
     # 限流：搜索间隔 30s（防接口级风控）
     from goofish_z.core.limiter import check as rate_check
     from goofish_z.core.guard import check as guard_check
@@ -326,6 +410,8 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int
     if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= MAX_PAGE:
         raise ValueError(f"页码必须是 1 到 {MAX_PAGE} 的整数")
     validate_sort(sort)
+    if min_price is not None and max_price is not None and min_price > max_price:
+        raise ValueError(f"min_price({min_price}) 不能大于 max_price({max_price})，请检查价格区间")
     guard_check()
     rate_check("search")
     args = (str(query).strip(), _normalize_limit(limit), page)
@@ -333,6 +419,43 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int
     items = fetched["items"]
     fetched_count = len(items)
     items, excluded = filter_search_items(str(query).strip(), items)
+
+    # 低价值与虚假套路过滤 (基于价格-价值匹配引擎: 纯展示不出 / 单价虚标引流 / 严重故障残次 / 跨型号引流 / 溢价暗病)
+    if filter_low_value:
+        from goofish_z.price_value_engine import PriceValueEngine
+        from goofish_z.core.price import price_value
+
+        price_entries = []
+        for it in items:
+            p = price_value(it.get("price"))
+            if p is not None:
+                price_entries.append((it, p))
+        # 仅在查询包含具体型号/规格（如 90HX, 3080, 4090 或具体显存）时计算同款中位数
+        # 对宽泛搜索（如单纯搜“显卡”、“手机”），不强制计算跨型号混合中位数，避免高档商品被低端混杂池误杀
+        # 基准只从可比样本推导：剔除低价配件样本；查询带变体词时只取同变体样本
+        has_specific_model = _mentions_specific_product(query)
+        batch_median = None
+        if price_entries and has_specific_model:
+            candidates = _median_candidates(str(query), price_entries)
+            med_prices = sorted(p for _, p in candidates)
+            _mid = len(med_prices) // 2
+            if len(med_prices) % 2:
+                batch_median = med_prices[_mid]
+            else:
+                batch_median = (med_prices[_mid - 1] + med_prices[_mid]) / 2
+
+        pv_engine = PriceValueEngine()
+        filtered = []
+        for it in items:
+            assessment = pv_engine.assess(it, query=str(query), batch_median=batch_median)
+            if assessment.tags:
+                it.setdefault("tags", []).extend(assessment.tags)
+            it["vmi"] = assessment.vmi
+            if assessment.is_blocked:
+                excluded.append(_filtered_item(it, assessment.reasons))
+            else:
+                filtered.append(it)
+        items = filtered
     result: dict[str, Any] = {
         **fetched, "sort": sort, "items": items, "count": len(items),
         "filtered_count": fetched_count - len(items),
@@ -351,6 +474,31 @@ def search(query: str, limit: int = 20, filter_blacklist: bool = True, page: int
         result["count"] = len(passed)
         result["blocked"] = [_filtered_item(b, b.get("_blocked_reasons", [])) for b in blocked]
         result["blocked_count"] = len(blocked)
+    
+    # 价格栅栏过滤
+    if min_price is not None or max_price is not None:
+        from goofish_z.core.price import price_value
+        passed_price = []
+        for it in result.get("items", []):
+            p = price_value(it.get("price"))
+            if p is None:
+                result.setdefault("blocked", []).append(
+                    _filtered_item(it, ["价格未知/面议，无法验证是否满足价格区间"])
+                )
+                result["blocked_count"] = result.get("blocked_count", 0) + 1
+                continue
+            if min_price is not None and p < min_price:
+                result.setdefault("blocked", []).append(_filtered_item(it, [f"低于设定的最底价 {min_price}"]))
+                result["blocked_count"] = result.get("blocked_count", 0) + 1
+                continue
+            if max_price is not None and p > max_price:
+                result.setdefault("blocked", []).append(_filtered_item(it, [f"高于设定的最高价 {max_price}"]))
+                result["blocked_count"] = result.get("blocked_count", 0) + 1
+                continue
+            passed_price.append(it)
+        result["items"] = passed_price
+        result["count"] = len(passed_price)
+        
     return result
 
 

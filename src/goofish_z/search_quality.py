@@ -55,6 +55,10 @@ def wants_service(query: str) -> bool:
     return bool(_SERVICE_INTENT.search(query))
 
 
+def wants_parts(query: str) -> bool:
+    return bool(_PART_QUERY.search(normalize_search_text(query)))
+
+
 def listing_reasons(query: str, item: dict[str, Any]) -> list[str]:
     title = normalize_search_text(item.get("title", ""))
     query = normalize_search_text(query)

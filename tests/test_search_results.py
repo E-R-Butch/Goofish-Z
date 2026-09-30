@@ -210,3 +210,119 @@ class SearchResultsTest(OfflineCase):
             with self.assertRaises(AuthRequiredError):
                 asyncio.run(self.search._go_to_page(page, 2))
             reserve.assert_not_awaited()
+
+    def test_impossible_price_range_is_rejected_before_search(self):
+        with self.assertRaises(ValueError):
+            self.search.search("synthetic", min_price=100, max_price=50)
+        self.assertFalse(self.limiter.STATE_PATH.exists())
+
+    def test_price_fence_excludes_unknown_prices(self):
+        fetched = {"items": [
+            fixture("600", item_id="synthetic-known", title="合成iPhone 15 功能正常"),
+            fixture("面议", item_id="synthetic-negotiable", title="合成iPhone 15 面议"),
+        ], "page": 1, "source_count": 2, "has_next": False}
+        with patch.object(self.search, "_run", AsyncMock(return_value=fetched)):
+            result = self.search.search("iPhone 15", min_price=500, max_price=2000)
+        self.assertEqual([it["item_id"] for it in result["items"]], ["synthetic-known"])
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["blocked_count"], 1)
+        self.assertEqual(result["blocked"][0]["item_id"], "synthetic-negotiable")
+        self.assertIn("价格未知", result["blocked"][0]["reasons"][0])
+
+    def test_short_product_models_count_as_specific_queries(self):
+        for value in ("iPhone 15", "iPad mini 6", "小米14", "RTX4090", "90HX"):
+            with self.subTest(value=value):
+                self.assertTrue(self.search._mentions_specific_product(value))
+        for value in ("显卡", "投影仪", "电脑主机", "显卡 24G", "512G 手机", "DDR4 32G"):
+            with self.subTest(value=value):
+                self.assertFalse(self.search._mentions_specific_product(value))
+
+    def test_short_model_query_enables_price_value_filtering(self):
+        fetched = {"items": [
+            fixture("1500", item_id="synthetic-normal-a", title="合成iPhone 15 功能正常"),
+            fixture("1500", item_id="synthetic-normal-b", title="合成iPhone 15 功能正常"),
+            fixture("6000", item_id="synthetic-overpriced", title="合成iPhone 15 指纹坏 功能正常"),
+        ], "page": 1, "source_count": 3, "has_next": False}
+        with patch.object(self.search, "_run", AsyncMock(return_value=fetched)):
+            result = self.search.search("iPhone 15")
+        self.assertEqual({it["item_id"] for it in result["items"]},
+                         {"synthetic-normal-a", "synthetic-normal-b"})
+        detail = next(it for it in result["filtered"] if it["item_id"] == "synthetic-overpriced")
+        self.assertTrue(any("价格与价值严重不匹配" in reason for reason in detail["reasons"]))
+
+    def test_median_ignores_cheap_accessories_and_phones_survive(self):
+        fetched = {"items": [
+            fixture("15", item_id="synthetic-case", title="合成iPhone 15 手机壳 全新未拆"),
+            fixture("9", item_id="synthetic-film", title="合成iPhone 15 钢化膜 2片装"),
+            fixture("25", item_id="synthetic-cover", title="合成iPhone 15 保护套 硅胶"),
+            fixture("29", item_id="synthetic-stand", title="合成iPhone 15 手机支架 桌面"),
+            fixture("45", item_id="synthetic-cable", title="合成iPhone 15 数据线 快充线"),
+            fixture("2600", item_id="synthetic-phone-a", title="合成iPhone 15 128G 功能正常"),
+            fixture("2800", item_id="synthetic-phone-b", title="合成iPhone 15 128G 国行 电池91"),
+            fixture("3000", item_id="synthetic-phone-c", title="合成iPhone 15 128G 成色新 无拆修磕碰"),
+        ], "page": 1, "source_count": 8, "has_next": False}
+        with patch.object(self.search, "_run", AsyncMock(return_value=fetched)):
+            result = self.search.search("iPhone 15")
+        kept = {it["item_id"] for it in result["items"]}
+        for phone in ("synthetic-phone-a", "synthetic-phone-b", "synthetic-phone-c"):
+            self.assertIn(phone, kept)
+        vmi = next(it["vmi"] for it in result["items"] if it["item_id"] == "synthetic-phone-a")
+        self.assertGreater(vmi, 0.9)
+        self.assertEqual(result["blocked_count"], 0)
+
+    def test_variant_query_excludes_other_variants_from_median(self):
+        fetched = {"items": [
+            fixture("3000", item_id="synthetic-base-a", title="合成iPhone 15 128G 功能正常"),
+            fixture("3000", item_id="synthetic-base-b", title="合成iPhone 15 128G 国行 电池91"),
+            fixture("3100", item_id="synthetic-base-c", title="合成iPhone 15 128G 成色新"),
+            fixture("6000", item_id="synthetic-pro-a", title="合成iPhone 15 Pro 256G 功能正常"),
+            fixture("6200", item_id="synthetic-pro-b", title="合成iPhone 15 Pro 256G 国行"),
+        ], "page": 1, "source_count": 5, "has_next": False}
+        with patch.object(self.search, "_run", AsyncMock(return_value=fetched)):
+            result = self.search.search("iPhone 15 Pro")
+        kept = {it["item_id"] for it in result["items"]}
+        self.assertIn("synthetic-pro-a", kept)
+        self.assertIn("synthetic-pro-b", kept)
+        self.assertIn("synthetic-base-a", kept)
+
+    def test_capacity_only_query_does_not_enable_mixed_model_baseline(self):
+        fetched = {"items": [
+            fixture("5200", item_id="synthetic-3090-a", title="合成3090 24G显卡 成色正常"),
+            fixture("5400", item_id="synthetic-3090-b", title="合成3090 24G显卡 无拆修"),
+            fixture("5600", item_id="synthetic-3090-c", title="合成3090 24G显卡 国行"),
+            fixture("12000", item_id="synthetic-4090", title="合成4090 24G显卡 功能正常"),
+        ], "page": 1, "source_count": 4, "has_next": False}
+        with patch.object(self.search, "_run", AsyncMock(return_value=fetched)):
+            result = self.search.search("显卡 24G")
+        kept = {it["item_id"] for it in result["items"]}
+        self.assertIn("synthetic-4090", kept)
+        self.assertIn("synthetic-3090-a", kept)
+        self.assertEqual(result["filtered_count"], 0)
+
+    def test_even_pool_median_is_statistical(self):
+        fetched = {"items": [
+            fixture("1000", item_id="synthetic-cheap", title="合成iPhone 15 128G 功能正常"),
+            fixture("5000", item_id="synthetic-high", title="合成iPhone 15 128G 功能正常"),
+        ], "page": 1, "source_count": 2, "has_next": False}
+        with patch.object(self.search, "_run", AsyncMock(return_value=fetched)):
+            result = self.search.search("iPhone 15")
+        kept = {it["item_id"] for it in result["items"]}
+        self.assertIn("synthetic-cheap", kept)
+        self.assertNotIn("synthetic-high", kept)
+        detail = next(it for it in result["filtered"] if it["item_id"] == "synthetic-high")
+        self.assertTrue(any("价格与价值严重不匹配" in reason for reason in detail["reasons"]))
+
+    def test_median_pool_partitioned_by_model_generation(self):
+        fetched = {"items": [
+            fixture("2000", item_id="synthetic-14-a", title="合成iPhone 14 128G 功能正常"),
+            fixture("2150", item_id="synthetic-14-b", title="合成iPhone 14 128G 国行 电池91"),
+            fixture("2300", item_id="synthetic-14-c", title="合成iPhone 14 Pro 256G 成色新"),
+            fixture("3900", item_id="synthetic-15", title="合成iPhone 15 128G 功能正常"),
+        ], "page": 1, "source_count": 4, "has_next": False}
+        with patch.object(self.search, "_run", AsyncMock(return_value=fetched)):
+            result = self.search.search("iPhone 15")
+        kept = {it["item_id"] for it in result["items"]}
+        self.assertIn("synthetic-15", kept)
+        for old in ("synthetic-14-a", "synthetic-14-b", "synthetic-14-c"):
+            self.assertIn(old, kept)
+        self.assertEqual(result["filtered_count"], 0)

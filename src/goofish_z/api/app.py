@@ -91,11 +91,20 @@ def api_search(
     limit: int = Query(20, ge=1, le=50),
     page: int = Query(1, ge=1, le=50),
     sort: Literal["default", "price_asc", "price_desc", "newest"] = Query("default", description="闲鱼原生排序"),
+    filter_low_value: bool = Query(True, description="是否过滤低价值与虚假引流套路商品"),
+    min_price: float | None = Query(None, ge=0, description="最低价格过滤"),
+    max_price: float | None = Query(None, ge=0, description="最高价格过滤"),
 ) -> JSONResponse:
     """搜索闲鱼商品。"""
     params = {"query": q, "limit": limit, "page": page}
     if sort != "default":
         params["sort"] = sort
+    if not filter_low_value:
+        params["filter_low_value"] = False
+    if min_price is not None:
+        params["min_price"] = min_price
+    if max_price is not None:
+        params["max_price"] = max_price
     result = _call_command("search.items", params)
     return JSONResponse(result)
 
@@ -117,7 +126,7 @@ def api_item_get(
     result = _call_command("item.get", {"item_id": item_id})
     if not isinstance(result, dict):
         raise HTTPException(500, "item.get 返回结构非预期")
-    public_fields = ("item_id", "title", "price", "status", "detail")
+    public_fields = ("item_id", "title", "price", "price_range", "skus", "status", "detail")
     return JSONResponse({field: result[field] for field in public_fields if field in result})
 
 

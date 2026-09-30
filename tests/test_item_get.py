@@ -43,5 +43,38 @@ class ItemGetTest(unittest.TestCase):
         )
 
 
+    def test_sku_prices_respect_field_units(self) -> None:
+        raw = {
+            "data": {
+                "itemDO": {
+                    "itemId": "0000000000000",
+                    "title": "合成多规格商品",
+                    "soldPrice": "100",
+                    "skuList": [
+                        {"skuId": "1", "price": "4099", "quantity": 1,
+                         "propertyList": [{"actualValueText": "20G"}]},
+                        {"skuId": "2", "priceInCent": "999", "quantity": 2,
+                         "propertyList": [{"actualValueText": "10G"}]},
+                        {"skuId": "3", "priceInCent": "129900", "quantity": 1,
+                         "propertyList": [{"actualValueText": "24G"}]},
+                        {"skuId": "4", "price": "", "quantity": 0,
+                         "propertyList": [{"actualValueText": "默认"}]},
+                    ],
+                },
+                "sellerDO": {"nick": "合成测试卖家"},
+                "trackParams": {},
+            }
+        }
+        with (
+            patch("goofish_z.core.limiter.check"),
+            patch.object(item_get.Session, "load", return_value=object()),
+            patch.object(item_get, "call", return_value=raw),
+        ):
+            result = item_get.get("0000000000000")
+        self.assertEqual([round(sku["price"], 2) for sku in result["skus"]],
+                         [4099.0, 9.99, 1299.0, 0.0])
+        self.assertEqual([sku["name"] for sku in result["skus"]], ["20G", "10G", "24G", "默认"])
+
+
 if __name__ == "__main__":
     unittest.main()
