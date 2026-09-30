@@ -400,6 +400,7 @@ def search(
     min_price: float | None = None,
     max_price: float | None = None,
     filter_low_value: bool = True,
+    resolve_skus: bool = False,
 ) -> dict[str, Any]:
     # 限流：搜索间隔 30s（防接口级风控）
     from goofish_z.core.limiter import check as rate_check
@@ -447,6 +448,22 @@ def search(
         pv_engine = PriceValueEngine()
         filtered = []
         for it in items:
+            if resolve_skus and "item_id" in it:
+                p = price_value(it.get("price"))
+                base = batch_median or 1000.0
+                title = it.get("title", "")
+                might_be_multi = any(w in title for w in ("多", "选", "套餐", "规格", "配置"))
+                deep_cheap = (p is not None and 500.0 <= p < base * 0.78)
+                if might_be_multi or deep_cheap:
+                    try:
+                        from goofish_z.commands.item.get import get as get_item
+                        # get_item includes a 5s rate_check("detail") limit automatically
+                        details = get_item(it["item_id"])
+                        if "skuList" in details:
+                            it["skuList"] = details["skuList"]
+                    except Exception:
+                        pass
+
             assessment = pv_engine.assess(it, query=str(query), batch_median=batch_median)
             if assessment.tags:
                 it.setdefault("tags", []).extend(assessment.tags)
