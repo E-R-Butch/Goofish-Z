@@ -54,6 +54,8 @@ data class SearchResponse(
     val count: Int = 0,
     val query: String = "",
     val blocked_count: Int = 0,
+    val page: Int = 1,
+    val has_next: Boolean = false,
 )
 
 // ---- 监控 ----
@@ -90,6 +92,8 @@ data class WatchRunResult(
     val keyword: String = "",
     val captured: Int = 0,
     val blocked_count: Int = 0,
+    val page: Int = 1,
+    val has_next: Boolean = false,
     val bargain_count: Int = 0,
     val bargains: List<Bargain> = emptyList(),
     val auto_banned: List<AutoBanned> = emptyList(),

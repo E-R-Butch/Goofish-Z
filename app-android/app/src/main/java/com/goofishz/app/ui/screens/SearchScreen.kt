@@ -49,18 +49,34 @@ fun SearchScreen(vm: GoofishViewModel) {
         val resolveSkus by vm.resolveSkus.collectAsState()
         val searchSort by vm.searchSort.collectAsState()
 
+        var sortExpanded by remember { mutableStateOf(false) }
+        val sortMap = mapOf("default" to "综合", "price_asc" to "价格升序", "price_desc" to "价格降序", "newest" to "最新发布")
+
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 0.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            Box {
+                OutlinedButton(onClick = { sortExpanded = true }) {
+                    Text(sortMap[searchSort] ?: "综合")
+                }
+                DropdownMenu(expanded = sortExpanded, onDismissRequest = { sortExpanded = false }) {
+                    sortMap.forEach { (k, v) ->
+                        DropdownMenuItem(
+                            text = { Text(v) },
+                            onClick = { vm.setSort(k); sortExpanded = false }
+                        )
+                    }
+                }
+            }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { vm.toggleFilterLowValue() }) {
                 Checkbox(checked = filterLowValue, onCheckedChange = { vm.toggleFilterLowValue() })
-                Text("过滤低价值", style = MaterialTheme.typography.labelMedium)
+                Text("反欺诈", style = MaterialTheme.typography.labelMedium)
             }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { vm.toggleResolveSkus() }) {
                 Checkbox(checked = resolveSkus, onCheckedChange = { vm.toggleResolveSkus() })
-                Text("受限SKU对齐", style = MaterialTheme.typography.labelMedium)
+                Text("探底价", style = MaterialTheme.typography.labelMedium)
             }
         }
 
@@ -173,6 +189,18 @@ fun SearchItemCard(item: SearchItem) {
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error,
                 )
+            }
+            if (item.tags.isNotEmpty() || item.vmi != null) {
+                Spacer(Modifier.height(8.dp))
+                Row(modifier = Modifier.fillMaxWidth().clickable { }, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    item.vmi?.let { vmi ->
+                        val vmiColor = if (vmi >= 1.15) MaterialTheme.colorScheme.primary else if (vmi < 0.65) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary
+                        SuggestionChip(onClick = {}, label = { Text("VMI: %.2f".format(vmi), color = vmiColor) })
+                    }
+                    item.tags.take(2).forEach { tag ->
+                        SuggestionChip(onClick = {}, label = { Text(tag) })
+                    }
+                }
             }
         }
     }
