@@ -94,6 +94,7 @@ def api_search(
     filter_low_value: bool = Query(True, description="是否过滤低价值与虚假引流套路商品"),
     min_price: float | None = Query(None, ge=0, description="最低价格过滤"),
     max_price: float | None = Query(None, ge=0, description="最高价格过滤"),
+    resolve_skus: bool = Query(False, description="是否受限拉取详情自动补充真实 SKU"),
 ) -> JSONResponse:
     """搜索闲鱼商品。"""
     params = {"query": q, "limit": limit, "page": page}
@@ -105,6 +106,8 @@ def api_search(
         params["min_price"] = min_price
     if max_price is not None:
         params["max_price"] = max_price
+    if resolve_skus:
+        params["resolve_skus"] = True
     result = _call_command("search.items", params)
     return JSONResponse(result)
 
