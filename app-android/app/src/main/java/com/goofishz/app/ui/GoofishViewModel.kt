@@ -18,6 +18,19 @@ class GoofishViewModel(
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
+    private val _searchPage = MutableStateFlow(1)
+    val searchPage = _searchPage.asStateFlow()
+
+    private val _searchSort = MutableStateFlow("default")
+    val searchSort = _searchSort.asStateFlow()
+
+    private val _filterLowValue = MutableStateFlow(true)
+    val filterLowValue = _filterLowValue.asStateFlow()
+
+    private val _resolveSkus = MutableStateFlow(false)
+    val resolveSkus = _resolveSkus.asStateFlow()
+
+
     private val _searchResult = MutableStateFlow<SearchResponse?>(null)
     val searchResult: StateFlow<SearchResponse?> = _searchResult.asStateFlow()
 
@@ -54,21 +67,47 @@ class GoofishViewModel(
 
     fun setSearchQuery(q: String) { _searchQuery.value = q }
 
-    fun search() {
+    fun search(nextPage: Boolean = false) {
         val q = _searchQuery.value.trim()
         if (q.isEmpty()) return
+        
+        if (nextPage) {
+            _searchPage.value += 1
+        } else {
+            _searchPage.value = 1
+        }
+        
         viewModelScope.launch {
             _searching.value = true
             _error.value = null
             try {
-                _searchResult.value = api.search(q)
+                val newResult = api.search(
+                    query = q,
+                    page = _searchPage.value,
+                    sort = _searchSort.value,
+                    filterLowValue = _filterLowValue.value,
+                    resolveSkus = _resolveSkus.value
+                )
+                // If it's a next page, append items; otherwise replace
+                if (nextPage && _searchResult.value != null) {
+                    val currentItems = _searchResult.value!!.items
+                    // Create a merged response (simplified)
+                    _searchResult.value = newResult.copy(items = currentItems + newResult.items)
+                } else {
+                    _searchResult.value = newResult
+                }
             } catch (e: Exception) {
                 _error.value = e.message
+                if (nextPage) _searchPage.value -= 1 // rollback page
             } finally {
                 _searching.value = false
             }
         }
     }
+    
+    fun toggleFilterLowValue() { _filterLowValue.value = !_filterLowValue.value }
+    fun toggleResolveSkus() { _resolveSkus.value = !_resolveSkus.value }
+    fun setSort(s: String) { _searchSort.value = s }
 
     fun loadWatches() {
         viewModelScope.launch {
