@@ -18,7 +18,7 @@ from goofish_z.search_quality import extract_gpu_models, wants_parts, wants_serv
 
 # 1. 纯展示 / 占位 / 不出 (价值归零) / 小作文贴
 PAT_DISPLAY_ONLY = re.compile(
-    r"(?:仅展示|只展示|仅供欣赏|不[出卖]|非卖[品贴]|暂不出|勿拍|请勿拍下|拍下不发|谁拍谁傻|抵制奸商|科普贴|曝光帖|挂人|避坑指南)",
+    r"(?:仅展示|只展示|仅供欣赏|不[出卖](?!外地|外省|省外|本市|省内|同城|快递|邮寄|物流|邮费|运费|包邮|偏远|海外|港澳台|新疆|西藏)|非卖[品贴]|暂不出|勿拍|请勿拍下|拍下不发|谁拍谁傻|抵制奸商|科普贴|曝光帖|挂人|避坑指南)",
     re.IGNORECASE,
 )
 
@@ -374,7 +374,17 @@ class PriceValueEngine:
                 fair_value *= 1.50
                 tags.append("512G超大容量")
 
-        if any(k in text for k in ("插卡", "蜂窝", "LTE")) or PAT_CELLULAR.search(text):
+        # 蜂窝加成仅对「可选加装蜂窝」的产品线生效（平板／二合一）；手机等蜂窝标配产品线不构成增值
+        _low_text = text.lower()
+        _optional_cellular = any(
+            k in _low_text for k in ("ipad", "平板", "tablet", "matepad", "surface", "galaxy tab")
+        ) or any(
+            k in str(active_query).lower()
+            for k in ("ipad", "平板", "tablet", "matepad", "surface", "galaxy tab")
+        )
+        if _optional_cellular and (
+            any(k in text for k in ("插卡", "蜂窝", "LTE")) or PAT_CELLULAR.search(text)
+        ):
             fair_value *= 1.15  # 蜂窝版加成 +15%
             tags.append("蜂窝插卡版")
 
@@ -482,7 +492,10 @@ class PriceValueEngine:
                     fair_value = 0.0
 
         # 跨品类完全无关商品污染 (如搜显卡出相机、电池、充电器)
-        if _targets_gpu(active_query):
+        # 例外：查询本身就要整机/主机，且标题就是整机（常带「华硕主板」等配置描述）。
+        query_wants_host = bool(re.search(r"主机|整机|台式|工作站|全套", active_query))
+        host_listing = query_wants_host and bool(re.search(r"主机|整机|台式|电脑|服务器|网吧", title))
+        if _targets_gpu(active_query) and not host_listing:
             if PAT_IRRELEVANT_CATEGORY.search(title) or (
                 PAT_IRRELEVANT_CATEGORY.search(text)
                 and not any(k in text for k in ("显卡", "显存", "算力", "PCI", "GA102", "核芯", "风扇"))
@@ -505,7 +518,6 @@ class PriceValueEngine:
         # (极端超低价不再单独硬拦；与上方「低价处理原则」统一：无确证信息只做观察提示)
 
         # 搜显卡单卡时整机混入引流；查询本身就在找主机/整机时保留整机结果
-        query_wants_host = bool(re.search(r"主机|整机|台式|工作站|全套", active_query))
         if not query_wants_host and PAT_HOST_MACHINE.search(title) and any(
             k in active_query.upper()
             for k in ("HX", "3060", "3070", "3080", "3090", "4060", "4070", "4080", "4090", "5080", "5090", "显卡", "GPU")

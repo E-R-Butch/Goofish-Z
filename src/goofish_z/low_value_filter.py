@@ -15,7 +15,7 @@ from goofish_z.search_quality import wants_parts, wants_service
 
 # 纯展示 / 占位 / 不出 / 小作文贴
 PAT_DISPLAY_ONLY = re.compile(
-    r"(?:仅展示|只展示|仅供欣赏|不[出卖]|非卖[品贴]|暂不出|勿拍|请勿拍下|拍下不发|谁拍谁傻|抵制奸商|科普贴|曝光帖|挂人|避坑指南)",
+    r"(?:仅展示|只展示|仅供欣赏|不[出卖](?!外地|外省|省外|本市|省内|同城|快递|邮寄|物流|邮费|运费|包邮|偏远|海外|港澳台|新疆|西藏)|非卖[品贴]|暂不出|勿拍|请勿拍下|拍下不发|谁拍谁傻|抵制奸商|科普贴|曝光帖|挂人|避坑指南)",
     re.IGNORECASE,
 )
 
@@ -185,7 +185,17 @@ class LowValueClassifier:
             fair_value *= 1.50
             tags.append("512G超大容量")
 
-        if any(k in text for k in ("插卡", "蜂窝", "LTE")) or PAT_CELLULAR.search(text):
+        # 蜂窝加成仅对「可选加装蜂窝」的产品线生效（平板／二合一）；手机等蜂窝标配产品线不构成增值
+        _low_text = text.lower()
+        _optional_cellular = any(
+            k in _low_text for k in ("ipad", "平板", "tablet", "matepad", "surface", "galaxy tab")
+        ) or any(
+            k in str(query).lower()
+            for k in ("ipad", "平板", "tablet", "matepad", "surface", "galaxy tab")
+        )
+        if _optional_cellular and (
+            any(k in text for k in ("插卡", "蜂窝", "LTE")) or PAT_CELLULAR.search(text)
+        ):
             fair_value *= 1.15
             tags.append("蜂窝插卡版")
 

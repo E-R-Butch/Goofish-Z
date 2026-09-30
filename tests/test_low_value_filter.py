@@ -204,6 +204,27 @@ class TestPriceValueEngineReview(unittest.TestCase):
         ipad = self._assess("iPad mini 6 256G 4G版 全功能正常", "¥2300", "iPad mini 6", 2000)
         self.assertIn("蜂窝插卡版", ipad.tags)
 
+    def test_shipping_qualifier_not_treated_as_non_sale(self):
+        local_sale = self._assess("RTX4090 24G 显卡 不出外地，仅限同城自提", "¥9000", "RTX4090")
+        self.assertFalse(local_sale.is_blocked)
+        control = self._assess("CMP90HX 已解锁图形管线，仅展示。不出。", "¥1558", "90HX")
+        self.assertTrue(control.is_blocked)
+
+    def test_host_query_keeps_system_listing_mentioning_motherboard(self):
+        host = self._assess("RTX4090整机 华硕主板 32G内存", "¥4000", "4090主机")
+        self.assertFalse(host.is_blocked)
+        plain = self._assess("RTX4090整机 华硕主板 32G内存", "¥4000", "RTX4090")
+        self.assertTrue(plain.is_blocked)
+        bare_board = self._assess("华硕 Z790 主板 全新未拆", "¥2000", "4090主机")
+        self.assertTrue(bare_board.is_blocked)
+
+    def test_cellular_premium_only_for_optional_cellular_products(self):
+        phone = self._assess("iPhone 15 支持5G 128G 功能正常", "¥8000", "iPhone 15", 5000)
+        self.assertNotIn("蜂窝插卡版", phone.tags)
+        self.assertTrue(phone.is_blocked)
+        tablet = self._assess("iPad mini 6 256G 4G版 全功能正常", "¥2300", "iPad mini 6", 2000)
+        self.assertIn("蜂窝插卡版", tablet.tags)
+
     def test_parts_query_keeps_target_listings(self):
         wanted = self._assess("RTX4090 料板 无核心 供拆件", "¥200", "4090料板")
         self.assertFalse(wanted.is_blocked)
@@ -295,6 +316,12 @@ class TestLegacyClassifierParity(unittest.TestCase):
     def test_explicit_4g_marker_adds_cellular_tag(self):
         res = self.clf.evaluate({"title": "iPad mini 6 256G 4G版 全功能正常", "price": "¥2300"}, query="iPad mini 6")
         self.assertIn("蜂窝插卡版", res.tags)
+
+    def test_round4_shipping_and_cellular_parity(self):
+        local_sale = self.clf.evaluate({"title": "RTX4090 24G 显卡 不出外地，仅限同城自提", "price": "¥9000"}, query="RTX4090")
+        self.assertFalse(local_sale.is_low_value)
+        phone = self.clf.evaluate({"title": "iPhone 15 支持5G 128G 功能正常", "price": "¥8000"}, query="iPhone 15")
+        self.assertNotIn("蜂窝插卡版", phone.tags)
 
 
 if __name__ == "__main__":

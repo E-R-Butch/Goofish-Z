@@ -74,8 +74,16 @@ _MEDIAN_NOISE_RE = re.compile(
 _VARIANT_TOKEN_RE = re.compile(r"(?:^|[^a-z])(pro|max|plus|ultra|mini|air)(?:[^a-z]|$)", re.IGNORECASE)
 
 
+def _non_gpu_product_key(text: str) -> str:
+    """非 GPU 产品线的「型号+代数」键 (iPhone 15 / 小米14 / iPad mini 6)，用于基准分池。"""
+    m = _NON_GPU_MODEL_RE.search(str(text or ""))
+    if not m:
+        return ""
+    return re.sub(r"[\s\-]+", "", m.group(0)).lower()
+
+
 def _median_candidates(query: str, entries: list[tuple[dict, float]]) -> list[tuple[dict, float]]:
-    """只从可比样本推导同款基准：剔除明显低价配件样本；查询带变体词时只取同变体样本。"""
+    """只从可比样本推导同款基准：剔除明显低价配件样本；不同型号/代数样本不混池；查询带变体词时只取同变体样本。"""
     if len(entries) >= 4:
         prices = sorted(p for _, p in entries)
         p75 = prices[min(len(prices) - 1, int(len(prices) * 0.75))]
@@ -85,6 +93,15 @@ def _median_candidates(query: str, entries: list[tuple[dict, float]]) -> list[tu
             for it, p in entries
             if not (p < floor and _MEDIAN_NOISE_RE.search(str(it.get("title", ""))))
         ]
+    requested_key = _non_gpu_product_key(query)
+    if requested_key:
+        same_model = [
+            (it, p)
+            for it, p in entries
+            if _non_gpu_product_key(str(it.get("title", ""))) == requested_key
+        ]
+        if same_model:
+            entries = same_model
     variants = [v.lower() for v in _VARIANT_TOKEN_RE.findall(str(query))]
     if variants:
         same_variant = [
@@ -421,7 +438,11 @@ def search(
         if price_entries and has_specific_model:
             candidates = _median_candidates(str(query), price_entries)
             med_prices = sorted(p for _, p in candidates)
-            batch_median = med_prices[len(med_prices) // 2]
+            _mid = len(med_prices) // 2
+            if len(med_prices) % 2:
+                batch_median = med_prices[_mid]
+            else:
+                batch_median = (med_prices[_mid - 1] + med_prices[_mid]) / 2
 
         pv_engine = PriceValueEngine()
         filtered = []
