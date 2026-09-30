@@ -63,8 +63,22 @@ class GoofishApi(private val baseUrlProvider: () -> String) {
     }
 
     // ---- 搜索 ----
-    suspend fun search(query: String, limit: Int = 20): SearchResponse =
-        get("/api/search?q=${query.urlEncode()}&limit=$limit") { json.decodeFromString(it) }
+    suspend fun search(
+        query: String, 
+        limit: Int = 20,
+        page: Int = 1,
+        sort: String = "default",
+        filterLowValue: Boolean = true,
+        minPrice: Double? = null,
+        maxPrice: Double? = null,
+        resolveSkus: Boolean = false
+    ): SearchResponse {
+        var url = "/api/search?q=${query.urlEncode()}&limit=$limit&page=$page&sort=$sort&filter_low_value=$filterLowValue"
+        if (minPrice != null) url += "&min_price=$minPrice"
+        if (maxPrice != null) url += "&max_price=$maxPrice"
+        if (resolveSkus) url += "&resolve_skus=true"
+        return get(url) { json.decodeFromString(it) }
+    }
 
     // ---- 监控 ----
     suspend fun watchList(): WatchListResponse =

@@ -7,6 +7,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -41,6 +43,26 @@ fun SearchScreen(vm: GoofishViewModel) {
                 }
             },
         )
+
+        // 高级选项 (排序和过滤)
+        val filterLowValue by vm.filterLowValue.collectAsState()
+        val resolveSkus by vm.resolveSkus.collectAsState()
+        val searchSort by vm.searchSort.collectAsState()
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { vm.toggleFilterLowValue() }) {
+                Checkbox(checked = filterLowValue, onCheckedChange = { vm.toggleFilterLowValue() })
+                Text("过滤低价值", style = MaterialTheme.typography.labelMedium)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { vm.toggleResolveSkus() }) {
+                Checkbox(checked = resolveSkus, onCheckedChange = { vm.toggleResolveSkus() })
+                Text("受限SKU对齐", style = MaterialTheme.typography.labelMedium)
+            }
+        }
 
         // 错误提示
         error?.let {
