@@ -160,9 +160,12 @@ async def wait_send_ack(
             continue
         if not isinstance(msg, dict):
             continue
+        headers = msg.get("headers")
+        if not isinstance(headers, dict):
+            headers = {}
         with suppress(Exception):
             await ws.send(json.dumps(build_ack(msg)))
-        if (msg.get("headers") or {}).get("mid") == mid:
+        if headers.get("mid") == mid:
             return msg
 
 

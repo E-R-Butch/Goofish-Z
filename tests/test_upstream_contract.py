@@ -35,6 +35,15 @@ class UpstreamContractTest(OfflineCase):
             with self.subTest(payload=payload), self.assertRaises(self.errors.UpstreamError):
                 self.mtop._classify_error(payload, "api.test")
 
+    def test_non_string_ret_elements_are_rejected(self):
+        for payload in (
+            {"ret": {"status": "SUCCESS"}},
+            {"ret": [{"status": "SUCCESS"}]},
+            {"ret": [123]},
+        ):
+            with self.subTest(payload=payload), self.assertRaises(self.errors.UpstreamError):
+                self.mtop._classify_error(payload, "api.test")
+
     def test_success_still_passes(self):
         self.mtop._classify_error({"ret": ["SUCCESS::调用成功"]}, "api.test")
 

@@ -182,7 +182,11 @@ def _classify_error(raw: Any, api: str) -> None:
     if ret is None:
         raise UpstreamError(f"[{api}] 响应缺少 ret 字段：{str(raw)[:200]}")
     ret_items = ret if isinstance(ret, list) else [ret]
-    ret_str = " | ".join(str(x) for x in ret_items if x is not None).strip()
+    if not all(isinstance(x, str) for x in ret_items):
+        # ret 是 {"status":"SUCCESS"} 这类对象时 str() 后仍含 SUCCESS 子串，
+        # 会被误判成功；元素必须是字符串才对得上协议。
+        raise UpstreamError(f"[{api}] ret 元素类型异常：{str(ret)[:200]}")
+    ret_str = " | ".join(ret_items).strip()
     if not ret_str:
         raise UpstreamError(f"[{api}] ret 为空：{str(raw)[:200]}")
     if "SUCCESS" in ret_str:

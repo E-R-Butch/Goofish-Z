@@ -5,7 +5,7 @@
 """
 
 import importlib
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from support import OfflineCase
 
@@ -49,3 +49,19 @@ class SkuResolutionTest(OfflineCase):
         with patch.object(self.item_get, "get", return_value={"skus": []}):
             self.search_mod._attach_item_skus(item)
         self.assertNotIn("skus", item)
+
+    def test_search_entry_attaches_skus(self):
+        """从 search() 入口验证：把调用点改回内联 skuList 判断，这条会失败。"""
+        item = {"item_id": "synthetic-item-9", "title": "多规格 显卡", "price": "¥1000"}
+        payload = {"items": [item], "source_query": "多规格 显卡", "page": 1}
+        with (
+            patch.object(self.search_mod, "_run", new=AsyncMock(return_value=payload)),
+            patch.object(self.search_mod, "filter_search_items", return_value=([item], [])),
+            patch("goofish_z.core.limiter.check"),
+            patch("goofish_z.core.guard.check"),
+            patch.object(self.item_get, "get", return_value={"skus": SKUS}),
+        ):
+            result = self.search_mod.search(
+                "多规格 显卡", resolve_skus=True, filter_blacklist=False
+            )
+        self.assertEqual(result["items"][0]["skus"], SKUS)

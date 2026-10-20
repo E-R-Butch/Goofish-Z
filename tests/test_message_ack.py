@@ -7,6 +7,7 @@
 import asyncio
 import importlib
 import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from support import OfflineCase
 
@@ -60,6 +61,14 @@ class MessageAckTest(OfflineCase):
         self.assertEqual(len(ws.sent), 1)
         self.assertEqual(json.loads(ws.sent[0])["code"], 200)
 
+    def test_non_dict_headers_do_not_crash(self):
+        frames = [
+            json.dumps({"code": 200, "headers": ["MID1"]}),
+            json.dumps({"code": 200, "headers": {"mid": "MID1"}}),
+        ]
+        ack = asyncio.run(self.ws_mod.wait_send_ack(FakeWS(frames), "MID1", timeout=1.0))
+        self.assertIsNotNone(ack)
+
     # ---------- 结果映射 ----------
 
     def test_missing_ack_is_a_failure(self):
@@ -85,3 +94,49 @@ class MessageAckTest(OfflineCase):
         result = self.send_mod._apply_ack({"ok": False, "mid": "M"}, {})
         self.assertFalse(result["ok"])
         self.assertIn("ack_code", result["error"])
+
+    # ---------- 入口：_send 端到端 ----------
+
+    def test_send_entry_maps_missing_ack_to_failure(self):
+        """从 _send() 入口验证：把等待回执改回 sleep 后无条件 ok=True，这条会失败。"""
+        session = MagicMock(unb="synthetic-unb")
+        with (
+            patch.object(self.send_mod, "connect", return_value=_FakeConnect()),
+            patch.object(self.send_mod, "register", new=AsyncMock()),
+            patch.object(self.send_mod, "heartbeat_loop", new=AsyncMock()),
+            patch.object(self.send_mod, "send_text", new=AsyncMock(return_value="MID1")),
+            patch.object(self.send_mod, "wait_send_ack", new=AsyncMock(return_value=None)),
+            patch.object(self.send_mod, "get_access_token", return_value="synthetic-token"),
+        ):
+            result = asyncio.run(self.send_mod._send(
+                session, cid="cid", toid="toid", text="hi", kind="text",
+                image_url="", image_width=0, image_height=0, item_id="",
+            ))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "ack_timeout")
+
+    def test_send_entry_reports_success_on_200_ack(self):
+        session = MagicMock(unb="synthetic-unb")
+        with (
+            patch.object(self.send_mod, "connect", return_value=_FakeConnect()),
+            patch.object(self.send_mod, "register", new=AsyncMock()),
+            patch.object(self.send_mod, "heartbeat_loop", new=AsyncMock()),
+            patch.object(self.send_mod, "send_text", new=AsyncMock(return_value="MID1")),
+            patch.object(self.send_mod, "wait_send_ack",
+                         new=AsyncMock(return_value={"code": 200, "headers": {"mid": "MID1"}})),
+            patch.object(self.send_mod, "get_access_token", return_value="synthetic-token"),
+        ):
+            result = asyncio.run(self.send_mod._send(
+                session, cid="cid", toid="toid", text="hi", kind="text",
+                image_url="", image_width=0, image_height=0, item_id="",
+            ))
+        self.assertTrue(result["ok"])
+        self.assertNotIn("error", result)
+
+
+class _FakeConnect:
+    async def __aenter__(self):
+        return FakeWS([])
+
+    async def __aexit__(self, *exc_info):
+        return False
