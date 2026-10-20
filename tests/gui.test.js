@@ -603,3 +603,38 @@ test('missing or mismatched native sort provenance is rejected', async () => {
     assert.doesNotMatch(document.getElementById('searchResults').textContent,/wrong order/);
   }
 });
+
+test('old authentication success is shown as stale and unknown', async () => {
+  const {document, requests} = await screen({
+    '/api/diagnostics': {auth: {cookies_present: true, state: 'stale', valid: null,
+      last_check: {valid: true, checked_at: 100}}, circuit: {tripped: false}},
+  });
+  assert.match(document.getElementById('healthText').textContent, /陈旧.*未知/);
+  assert.doesNotMatch(document.getElementById('healthText').textContent, /校验通过/);
+  assert.ok(!requests.some(([url]) => /login|auth\/status|item\/get/.test(url)));
+});
+
+test('active risk overrides historical authentication success without claiming logout', async () => {
+  const {document} = await screen({
+    '/api/diagnostics': {auth: {cookies_present: true, state: 'verified', valid: true,
+      last_check: {valid: true, checked_at: 100}}, circuit: {tripped: true, remaining_seconds: 60}},
+  });
+  assert.match(document.getElementById('healthText').textContent, /风控.*不能据此判定退出登录/);
+  assert.doesNotMatch(document.getElementById('healthText').textContent, /校验通过|认证不可用/);
+});
+
+test('transport and authentication failures have distinct labels', async () => {
+  for (const [state, label] of [['network_error', '网络检查失败'], ['rate_limited', '请求限流'], ['auth_required', '认证不可用']]) {
+    const {document} = await screen({
+      '/api/diagnostics': {auth: {cookies_present: true, state, last_check: null}, circuit: {tripped: false}},
+    });
+    assert.ok(document.getElementById('healthText').textContent.includes(label));
+  }
+});
+
+test('legacy server history alone cannot claim a current verified state', async () => {
+  const {document} = await screen({
+    '/api/diagnostics': {auth: {cookies_present: true, last_check: {valid: true, checked_at: 100}}, circuit: {tripped: false}},
+  });
+  assert.match(document.getElementById('healthText').textContent, /待验证/);
+});

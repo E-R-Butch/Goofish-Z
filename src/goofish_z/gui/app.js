@@ -63,9 +63,17 @@ async function loadHealth() {
     await api('/health');
     const d = await api('/api/diagnostics');
     const auth = d.auth.last_check;
-    const state = !d.auth.cookies_present ? '尚未登录' : auth ?
-      `上次登录验证${auth.valid ? '通过' : '失败'} (${new Date(auth.checked_at * 1000).toLocaleString('zh-CN')})` : '登录状态待验证';
-    $('health').className = d.circuit.tripped ? 'status err' : 'status';
+    // valid 是三态：null 表示「无法判定」（风控/限流/网络错误），不能显示成「失败」。
+    const labels = {verified: '最近认证校验通过', auth_required: '认证不可用，需检查登录态',
+      risk_control: '接口受风控限制，不能据此判定退出登录', rate_limited: '请求限流，认证结果未知',
+      network_error: '网络检查失败，认证结果未知', error: '检查失败，认证结果未知',
+      missing: '尚无登录态文件', changed: '登录态已更新，等待重新校验',
+      stale: '认证记录已陈旧，当前可用性未知', unknown: '登录状态待验证'};
+    const authState = d.circuit.tripped ? 'risk_control' : d.auth.state ||
+      (!d.auth.cookies_present ? 'missing' : 'unknown');
+    const state = (labels[authState] || labels.unknown) +
+      (auth?.checked_at ? ` · 上次检查 ${new Date(auth.checked_at * 1000).toLocaleString('zh-CN')}` : '');
+    $('health').className = authState === 'verified' ? 'status' : 'status err';
     $('healthText').textContent = `API${d.version ? ` v${d.version}` : ''} 在线 · ${state}` +
       (d.circuit.tripped ? ` · 风控冷却 ${d.circuit.remaining_seconds} 秒` : '');
   } catch (e) {
