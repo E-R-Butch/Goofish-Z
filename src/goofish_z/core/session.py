@@ -10,7 +10,7 @@ import os
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import requests
 from loguru import logger
@@ -18,6 +18,7 @@ from loguru import logger
 from goofish_z.core.errors import AuthRequiredError, RiskControlError
 from goofish_z.core.paths import runtime_data_path
 from goofish_z.core.sign import generate_device_id, generate_sign
+from goofish_z.core.state_file import state_lock, write_state
 
 
 def resolve_cookie_path(cookie_path: Path | str | None = None) -> Path:
@@ -41,12 +42,19 @@ class Session:
     unb: str
     tracknick: str
     device_id: str
+    # 会话实际加载的文件；刷新要写回同一份，否则多路径部署会写到别的账号文件
+    cookie_path: Path | None = None
 
     @classmethod
-    def load(cls, cookie_path: Path | str | None = None) -> "Session":
+    def load(cls, cookie_path: Path | str | None = None, *, allow_bootstrap: bool = True) -> Session:
+        """加载会话。allow_bootstrap=False 时只读本地缓存，绝不自动从 Chrome 抓取。
+
+        显式认证检查（auth status）必须用 False：检查不该顺手修复登录态，
+        否则「验证失败」会被一次隐式恢复掩盖成成功。
+        """
         path = resolve_cookie_path(cookie_path)
 
-        cookies = _load_or_bootstrap_cookies(path)
+        cookies = _load_or_bootstrap_cookies(path, allow_bootstrap=allow_bootstrap)
 
         if "unb" not in cookies or "_m_h5_tk" not in cookies:
             raise AuthRequiredError(
@@ -65,6 +73,7 @@ class Session:
             unb=cookies["unb"],
             tracknick=cookies.get("tracknick", ""),
             device_id=_load_or_mint_device_id(cookies["unb"], path.parent / "device_id.json"),
+            cookie_path=path,
         )
 
     @property
@@ -75,9 +84,15 @@ class Session:
     # ---- goofish-omni 增强：认证自愈 ----
     def refresh_token(self) -> bool:
         """刷新登录态（移植 XianYuApis）。成功返回 True，并持久化新 cookie。"""
-        from goofish_z.core.guard import check as guard_check, looks_like_risk, trip
+        from goofish_z.core.guard import check as guard_check
+        from goofish_z.core.guard import looks_like_risk, trip
 
         guard_check()
+        from goofish_z.core.refresh import is_enabled
+
+        if not is_enabled():
+            # 自动刷新被整体关闭（GOOFISH_AUTO_REFRESH_TOKEN=0）：直接放弃，不静默打请求
+            return False
         if not self.http.cookies.get("unb"):
             return False
 
@@ -122,7 +137,13 @@ class Session:
             ok = "SUCCESS" in ret.upper() or "成功" in ret
             if ok:
                 from goofish_z.core.browser_cookie import _jars_to_entries
-                update_cookies_json(resolve_cookie_path(), _jars_to_entries([resp.cookies]))
+
+                try:
+                    # 写回本会话实际加载的文件；持久化失败不能报告完整恢复成功
+                    update_cookies_json(resolve_cookie_path(self.cookie_path), _jars_to_entries([resp.cookies]))
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"登录态持久化失败: {type(e).__name__}")
+                    return False
             return ok
         except RiskControlError:
             # 风控必须穿透：被下面的宽 except 吞掉就等于没有熔断。
@@ -145,8 +166,13 @@ class Session:
             raise
 
 
-def _load_or_bootstrap_cookies(path: Path) -> dict[str, str]:
-    """三级兜底：cookies.json → 本机 Chrome 自动抓取 → AuthRequiredError。"""
+def _load_or_bootstrap_cookies(path: Path, *, allow_bootstrap: bool = True) -> dict[str, str]:
+    """三级兜底：cookies.json → 本机 Chrome 自动抓取 → AuthRequiredError。
+
+    浏览器自动抓取受三重门控：调用方 allow_bootstrap、GOOFISH_AUTO_REFRESH_TOKEN=0、
+    GOOFISH_NO_CHROME_BOOTSTRAP=1。认证检查必须能关掉这一步，否则「验证失败」会被
+    一次隐式恢复掩盖成成功。
+    """
     cached_account = None
     if path.exists():
         try:
@@ -164,7 +190,13 @@ def _load_or_bootstrap_cookies(path: Path) -> dict[str, str]:
                 cached_account = raw.get("unb")
         except (AuthRequiredError, json.JSONDecodeError):
             pass
-    if os.environ.get("GOOFISH_NO_CHROME_BOOTSTRAP") == "1":
+    from goofish_z.core.refresh import is_enabled
+
+    if not allow_bootstrap:
+        raise AuthRequiredError(
+            f"缓存登录态缺失或已过期，且本次调用禁止自动导入（{path}）；请执行 goofish-z auth login"
+        )
+    if not is_enabled() or os.environ.get("GOOFISH_NO_CHROME_BOOTSTRAP") == "1":
         raise AuthRequiredError("缓存登录态缺失或已过期；自动浏览器恢复已禁用，请执行 goofish-z auth login")
     try:
         from goofish_z.core.browser_cookie import extract_goofish_cookies
@@ -193,8 +225,9 @@ def write_cookies_json(path: Path, cookies: dict[str, str] | list[dict[str, Any]
     """写入 cookie 文件。支持两种格式：
     - dict {name: value} — 闲鱼请求 Cookie 头，默认 .goofish.com
     - list [{name,value,domain,path,secure,httpOnly}] — 保留完整字段（扫码路径）
+
+    原子写：中途失败不会留下半个 cookie 文件，旧文件仍然可用。
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(cookies, dict):
         payload = [
             {"name": k, "value": v}
@@ -203,14 +236,7 @@ def write_cookies_json(path: Path, cookies: dict[str, str] | list[dict[str, Any]
         ]
     else:
         payload = list(cookies)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+    write_state(path, payload)
 
 
 def goofish_cookie_values(cookies: dict[str, str] | list[dict[str, Any]]) -> dict[str, str]:
@@ -236,32 +262,35 @@ def goofish_cookie_values(cookies: dict[str, str] | list[dict[str, Any]]) -> dic
 
 
 def update_cookies_json(path: Path, fresh: list[dict[str, Any]]) -> None:
-    """Refresh only matching name/domain/path entries; keep other origins intact."""
-    existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
-    if isinstance(existing, dict):
-        existing = [{"name": k, "value": v} for k, v in existing.items()]
-    merged = {}
-    for cookie in [*existing, *fresh]:
-        entry = {**cookie, "domain": cookie.get("domain") or ".goofish.com", "path": cookie.get("path") or "/"}
-        merged[(entry["name"], entry["domain"], entry["path"])] = entry
-    write_cookies_json(path, list(merged.values()))
+    """Refresh only matching name/domain/path entries; keep other origins intact.
+
+    读-合并-写整段持锁：并发刷新不会互相覆盖，也不会读到写了一半的文件。
+    """
+    with state_lock(path):
+        existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        if isinstance(existing, dict):
+            existing = [{"name": k, "value": v} for k, v in existing.items()]
+        merged = {}
+        for cookie in [*existing, *fresh]:
+            entry = {**cookie, "domain": cookie.get("domain") or ".goofish.com", "path": cookie.get("path") or "/"}
+            merged[(entry["name"], entry["domain"], entry["path"])] = entry
+        write_cookies_json(path, list(merged.values()))
 
 
 def _load_or_mint_device_id(unb: str, cache_path: Path | None = None) -> str:
-    """device_id 必须在 unb 维度稳定。"""
+    """device_id 必须在 unb 维度稳定。加锁避免并发进程各自生成一个。"""
     path = cache_path or runtime_data_path("device_id.json")
-    if path.exists():
-        try:
-            raw = json.loads(path.read_text())
-            if raw.get("unb") == unb and raw.get("device_id"):
-                return raw["device_id"]
-        except (json.JSONDecodeError, OSError):
-            pass
-    device_id = generate_device_id(unb)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"unb": unb, "device_id": device_id}))
-    path.chmod(0o600)
-    return device_id
+    with state_lock(path):
+        if path.exists():
+            try:
+                raw = json.loads(path.read_text())
+                if raw.get("unb") == unb and raw.get("device_id"):
+                    return raw["device_id"]
+            except (json.JSONDecodeError, OSError):
+                pass
+        device_id = generate_device_id(unb)
+        write_state(path, {"unb": unb, "device_id": device_id})
+        return device_id
 
 
 def _load_cookies(path: Path) -> dict[str, str]:

@@ -31,7 +31,11 @@ def read_state(path: Path) -> dict:
     return value
 
 
-def write_state(path: Path, value: dict) -> None:
+def write_state(path: Path, value: dict | list) -> None:
+    """原子发布一份 JSON 快照：写临时文件 → fsync → 替换。失败时旧文件保持完整。
+
+    临时文件由 mkstemp 创建，权限已是 0600，不会出现「先写后 chmod」的窗口。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
     try:
