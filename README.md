@@ -8,7 +8,7 @@
 
 ## 运行环境
 
-- **带图形界面的 macOS 或 Linux**。搜索驱动真实 Chrome 且默认 headful——headless 指纹会被闲鱼判风控，纯服务器 / SSH 无桌面环境基本不可用。
+- **真实搜索默认需要可显示窗口的图形环境**（macOS 桌面，或 Linux 上的 X11/Wayland）。`browser.py` 默认 headful，代码注释记录了实测结论：headless 指纹即便用系统 Chrome 也会被闲鱼判风控。没有桌面时有三条路——`GOOFISH_HEADLESS=1` 切 headless（能跑，但更容易被风控）、在 Linux 上起 Xvfb 提供虚拟显示，或只跑离线测试（测试不启动浏览器）。
 - **系统 Google Chrome**（不是 Chromium）。代码以 `channel="chrome"` 启动，所以**不需要**执行 `playwright install chromium`；Playwright 只提供 Python 侧驱动。启动时用独立临时 profile，不碰你正在使用的 Chrome 配置。
 - **Python 3.11+**。
 - **Node.js**：硬依赖。闲鱼请求签名由 `src/goofish_z/static/goofish_js_version_2.js` 计算，Python 通过 PyExecJS 调用 Node。没装 Node 时 `search`、`item` 等命令直接失败。
@@ -216,7 +216,7 @@ HTTP 为 `GET /api/search?q=4090&sort=price_asc&page=1`；CLI/MCP 的 `search.it
 | 429 / `Retry-After` | 等满剩余秒数。限额是全局共享的，不是单条命令 |
 | 提示风控 / `RGV587` / `FAIL_SYS_USER_VALIDATE` | 已进入熔断，硬风控 30 分钟。看 `doctor` 的 `circuit.remaining_seconds`，期间继续请求只会加重 |
 | 搜索一直加载中或结果为空 | 很可能被跳到登录页。重跑 `auth login --browser chrome`；首页能出商品不代表翻页也通过校验 |
-| 无桌面 / SSH 环境跑不起来 | 本工具要求 headful Chrome，纯服务器环境不适用 |
+| 无桌面的 Linux / 容器 | 默认 headful 需要 `DISPLAY`。用 `GOOFISH_HEADLESS=1` 切 headless，或起 Xvfb 提供虚拟显示；headless 更易被风控。纯离线测试不需要浏览器 |
 
 ## 代码与运行数据边界
 
