@@ -17,7 +17,11 @@ from goofish_z.core.ws import (
     register,
     send_image,
     send_text,
+    wait_send_ack,
 )
+
+# 发送回执等待上限（秒）。超时即视为未确认送达，不再无条件报成功。
+ACK_TIMEOUT = 5.0
 
 
 @command(
@@ -95,8 +99,28 @@ async def _send(
                 )
             else:
                 raise ValueError(f"不支持的 kind: {kind}")
-            # 等一轮 ack 回包，避免 WS 提前关
-            await asyncio.sleep(1.0)
+            ack = await wait_send_ack(ws, mid, timeout=ACK_TIMEOUT)
         finally:
             hb.cancel()
-    return {"cid": cid, "toid": toid, "kind": kind, "ok": True, "mid": mid}
+
+    result: dict[str, Any] = {"cid": cid, "toid": toid, "kind": kind, "ok": False, "mid": mid}
+    return _apply_ack(result, ack)
+
+
+def _apply_ack(result: dict[str, Any], ack: dict[str, Any] | None) -> dict[str, Any]:
+    """把下行回执映射到发送结果。
+
+    没有回执（超时）或 code 非 200 都算未确认送达——过去是 sleep 一秒后无条件
+    返回 ok=True，拒收和限流都看不出来。
+    """
+    if ack is None:
+        result["error"] = "ack_timeout"
+        return result
+    try:
+        code = int(ack.get("code", 0) or 0)
+    except (TypeError, ValueError):
+        code = 0
+    result["ok"] = code == 200
+    if not result["ok"]:
+        result["error"] = f"ack_code={ack.get('code')!r}"
+    return result

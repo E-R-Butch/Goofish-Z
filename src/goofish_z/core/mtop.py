@@ -19,6 +19,7 @@ from goofish_z.core.errors import (
     NotFoundError,
     RiskControlError,
     SignError,
+    UpstreamError,
 )
 from goofish_z.core.session import USER_AGENT, Session
 from goofish_z.core.sign import generate_sign
@@ -169,11 +170,26 @@ def _is_recoverable_auth_error(e: AuthRequiredError) -> bool:
     ))
 
 
-def _classify_error(raw: dict[str, Any], api: str) -> None:
-    """根据 ret 字段分类抛异常。成功则不抛。"""
-    ret = raw.get("ret") or []
-    ret_str = " | ".join(ret) if isinstance(ret, list) else str(ret)
-    if not ret_str or "SUCCESS" in ret_str:
+def _classify_error(raw: Any, api: str) -> None:
+    """根据 ret 字段分类抛异常。成功则不抛。
+
+    契约：raw 必须是 JSON 对象且带 ret。缺字段、ret 为空、类型异常一律按上游
+    违约报错——原来把它们当成功放行，协议一变所有失败都会静默通过。
+    """
+    if not isinstance(raw, dict):
+        raise UpstreamError(f"[{api}] 响应不是 JSON 对象：{str(raw)[:200]}")
+    ret = raw.get("ret")
+    if ret is None:
+        raise UpstreamError(f"[{api}] 响应缺少 ret 字段：{str(raw)[:200]}")
+    ret_items = ret if isinstance(ret, list) else [ret]
+    if not all(isinstance(x, str) for x in ret_items):
+        # ret 是 {"status":"SUCCESS"} 这类对象时 str() 后仍含 SUCCESS 子串，
+        # 会被误判成功；元素必须是字符串才对得上协议。
+        raise UpstreamError(f"[{api}] ret 元素类型异常：{str(ret)[:200]}")
+    ret_str = " | ".join(ret_items).strip()
+    if not ret_str:
+        raise UpstreamError(f"[{api}] ret 为空：{str(raw)[:200]}")
+    if "SUCCESS" in ret_str:
         return
 
     for kw in _RISK_KEYWORDS:

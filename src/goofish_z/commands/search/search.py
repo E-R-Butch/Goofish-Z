@@ -14,6 +14,8 @@ import asyncio
 import re
 from typing import Any
 
+from loguru import logger
+
 from goofish_z.core import Strategy, command
 from goofish_z.core.browser import auto_scroll, goofish_page
 from goofish_z.core.errors import AuthRequiredError, GoofishError
@@ -354,6 +356,27 @@ def _check_payload(payload: Any, query: str | None = None) -> None:
         raise GoofishError("闲鱼页面关键词与本次搜索不一致，已丢弃结果，请重新搜索")
 
 
+def _attach_item_skus(item: dict[str, Any]) -> None:
+    """按 item_id 拉商品详情，把真实规格挂到搜索结果条目上。
+
+    get_item 顶层返回的是 ``skus``（``_extract_skus`` 的产物），``skuList`` 只存在于
+    它返回的 ``raw`` 里。早先这里判断 ``"skuList" in details`` 恒为假，导致
+    ``--resolve-skus`` 从未真正补全过规格。单条详情失败只记日志，不中断整页搜索。
+    """
+    if not item.get("item_id"):
+        return
+    try:
+        from goofish_z.commands.item.get import get as get_item
+
+        # get_item 自带 5s rate_check("detail") 限流
+        details = get_item(item["item_id"])
+        skus = details.get("skus") or details.get("skuList")
+        if skus:
+            item["skus"] = skus
+    except Exception as e:  # noqa: BLE001 — 单条失败不该拖垮整页结果
+        logger.debug(f"[search] 补全 {item.get('item_id')} 规格失败，跳过：{e}")
+
+
 def _filtered_item(item: dict[str, Any], reasons: list[str]) -> dict[str, Any]:
     fields = ("item_id", "title", "price", "price_value", "price_text", "url", "location", "condition", "brand", "badge")
     return {**{key: item[key] for key in fields if key in item}, "reasons": reasons}
@@ -455,14 +478,7 @@ def search(
                 might_be_multi = any(w in title for w in ("多", "选", "套餐", "规格", "配置"))
                 deep_cheap = (p is not None and 500.0 <= p < base * 0.78)
                 if might_be_multi or deep_cheap:
-                    try:
-                        from goofish_z.commands.item.get import get as get_item
-                        # get_item includes a 5s rate_check("detail") limit automatically
-                        details = get_item(it["item_id"])
-                        if "skuList" in details:
-                            it["skuList"] = details["skuList"]
-                    except Exception:
-                        pass
+                    _attach_item_skus(it)
 
             assessment = pv_engine.assess(it, query=str(query), batch_median=batch_median)
             if assessment.tags:

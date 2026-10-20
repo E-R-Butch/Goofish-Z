@@ -15,7 +15,7 @@ from typing import Any, Optional
 import requests
 from loguru import logger
 
-from goofish_z.core.errors import AuthRequiredError
+from goofish_z.core.errors import AuthRequiredError, RiskControlError
 from goofish_z.core.paths import runtime_data_path
 from goofish_z.core.sign import generate_device_id, generate_sign
 
@@ -75,7 +75,7 @@ class Session:
     # ---- goofish-omni 增强：认证自愈 ----
     def refresh_token(self) -> bool:
         """刷新登录态（移植 XianYuApis）。成功返回 True，并持久化新 cookie。"""
-        from goofish_z.core.guard import check as guard_check
+        from goofish_z.core.guard import check as guard_check, looks_like_risk, trip
 
         guard_check()
         if not self.http.cookies.get("unb"):
@@ -111,12 +111,22 @@ class Session:
                     if existing.name == c.name:
                         self.http.cookies.clear(existing.domain, existing.path, existing.name)
                 self.http.cookies.set(c.name, c.value, domain=".goofish.com", path="/")
-            ret = str(resp.json().get("ret", ""))
+            payload = resp.json()
+            payload_dict = payload if isinstance(payload, dict) else {}
+            ret = str(payload_dict.get("ret", ""))
+            if looks_like_risk(ret):
+                # 风控不能当普通刷新失败处理：否则 mtop 会接着走浏览器免密刷新重试，
+                # 账号受限期间继续打请求。命中即熔断，并按风控上抛终止整条链路。
+                trip(f"refresh_token 触发风控：{ret[:120]}", api=api)
+                raise RiskControlError(f"[{api}] 刷新登录态时触发风控：{ret}", raw=payload_dict)
             ok = "SUCCESS" in ret.upper() or "成功" in ret
             if ok:
                 from goofish_z.core.browser_cookie import _jars_to_entries
                 update_cookies_json(resolve_cookie_path(), _jars_to_entries([resp.cookies]))
             return ok
+        except RiskControlError:
+            # 风控必须穿透：被下面的宽 except 吞掉就等于没有熔断。
+            raise
         except Exception as e:  # noqa: BLE001
             logger.warning(f"refresh_token 异常: {e}")
             return False
