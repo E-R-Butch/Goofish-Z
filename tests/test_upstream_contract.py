@@ -7,7 +7,7 @@
 """
 
 import importlib
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from support import OfflineCase
 
@@ -57,6 +57,8 @@ class UpstreamContractTest(OfflineCase):
     # ---------- refresh_token 风控熔断 ----------
 
     def _session_with(self, payload):
+        # refresh_token 会先算一次 mtop 签名；签名走 JS 运行时，单元测试不该依赖 node。
+        self.use(patch.object(self.session_mod, "generate_sign", return_value="synthetic-sign"))
         session = self.session_mod.Session(
             http=MagicMock(),
             unb="synthetic-unb",
