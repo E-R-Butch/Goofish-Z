@@ -229,8 +229,6 @@ After=network.target
 Type=simple
 WorkingDirectory=/opt/Goofish-Z
 Environment="PATH=/opt/Goofish-Z/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
-Environment=GOOFISH_AUTO_REFRESH_TOKEN=0
-Environment=GOOFISH_NO_CHROME_BOOTSTRAP=1
 ExecStart=/usr/bin/xvfb-run -a --server-args="-screen 0 1920x1080x24" \
   /opt/Goofish-Z/.venv/bin/uvicorn goofish_z.api.app:app --host 127.0.0.1 --port 8787
 Restart=on-failure
@@ -239,6 +237,17 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 ```
+
+自动恢复策略建议放 drop-in，主 unit 保持干净（改策略时不用动 ExecStart）：
+
+```ini
+# /etc/systemd/system/goofish-z-api.service.d/40-session-reliability.conf
+[Service]
+Environment=GOOFISH_AUTO_REFRESH_TOKEN=0
+Environment=GOOFISH_NO_CHROME_BOOTSTRAP=1
+```
+
+改完 `systemctl daemon-reload && systemctl restart goofish-z-api`，用 `systemctl show goofish-z-api -p DropInPaths` 确认 drop-in 已加载。
 
 容器内需要 `xvfb` 和 `google-chrome` 两个包。`--host 127.0.0.1` 表示只在本机监听；要从局域网访问，用反向代理或端口转发，不要直接把 API 暴露出去。
 
