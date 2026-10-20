@@ -34,6 +34,12 @@ _HARD_KEYWORDS = ("RGV587", "哎哟喂", "被挤爆", "punish", "PUNISH")
 _MED_KEYWORDS = ("FAIL_SYS_USER_VALIDATE", "USER_VALIDATE", "验证码", "滑块", "安全验证", "异常访问")
 
 
+def looks_like_risk(ret_str: str) -> bool:
+    """响应文本是否带风控特征（与 classify_level 同源，供非 mtop 路径复用）。"""
+    text = ret_str or ""
+    return any(kw in text for kw in _HARD_KEYWORDS + _MED_KEYWORDS)
+
+
 def classify_level(ret_str: str) -> str:
     """根据风控响应文本判定等级。"""
     for kw in _HARD_KEYWORDS:
