@@ -218,6 +218,30 @@ HTTP 为 `GET /api/search?q=4090&sort=price_asc&page=1`；CLI/MCP 的 `search.it
 | 搜索一直加载中或结果为空 | 很可能被跳到登录页。重跑 `auth login --browser chrome`；首页能出商品不代表翻页也通过校验 |
 | 无桌面的 Linux / 容器 | 默认 headful 需要 `DISPLAY`。用 `GOOFISH_HEADLESS=1` 切 headless，或起 Xvfb 提供虚拟显示；headless 更易被风控。纯离线测试不需要浏览器 |
 
+无桌面容器的常见做法是用 `xvfb-run` 包一层，仍然以 headful 启动 Chrome，指纹与桌面一致：
+
+```ini
+[Unit]
+Description=Goofish-Z HTTP API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/Goofish-Z
+Environment="PATH=/opt/Goofish-Z/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+Environment=GOOFISH_AUTO_REFRESH_TOKEN=0
+Environment=GOOFISH_NO_CHROME_BOOTSTRAP=1
+ExecStart=/usr/bin/xvfb-run -a --server-args="-screen 0 1920x1080x24" \
+  /opt/Goofish-Z/.venv/bin/uvicorn goofish_z.api.app:app --host 127.0.0.1 --port 8787
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+容器内需要 `xvfb` 和 `google-chrome` 两个包。`--host 127.0.0.1` 表示只在本机监听；要从局域网访问，用反向代理或端口转发，不要直接把 API 暴露出去。
+
 ## 代码与运行数据边界
 
 公开仓库只保存通用代码、文档和合成测试。账号、Cookie、Token、设备状态、浏览器临时 profile、限流/熔断状态、商品缓存、价格历史、SQLite 数据库都使用仓库外的 `~/.goofish-z/`，或 `GOOFISH_Z_DATA` 指定的外部目录。源码目录作为运行目录会被拒绝。
