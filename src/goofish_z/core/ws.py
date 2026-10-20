@@ -136,6 +136,36 @@ def build_ack(msg: dict[str, Any]) -> dict[str, Any]:
     return ack
 
 
+async def wait_send_ack(
+    ws: ClientConnection, mid: str, timeout: float = 5.0
+) -> dict[str, Any] | None:
+    """等一条 mid 匹配的下行回执，超时返回 None。
+
+    协议里下行 ack 用 code=200 表示受理，非 200 表示拒绝（见模块 docstring）。
+    回执的字段判定交给调用方，这里只负责把「收到的原始包」拿回来——发送侧
+    真正的问题是过去根本不读回执，sleep 一秒就当成功。
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+        except TimeoutError:
+            return None
+        try:
+            msg = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(msg, dict):
+            continue
+        with suppress(Exception):
+            await ws.send(json.dumps(build_ack(msg)))
+        if (msg.get("headers") or {}).get("mid") == mid:
+            return msg
+
+
 async def send_text(
     ws: ClientConnection, *, myid: str, cid: str, toid: str, text: str
 ) -> str:
