@@ -28,7 +28,12 @@ from typing import Any
 
 from loguru import logger
 
-from goofish_z.core.session import Session, resolve_cookie_path, update_cookies_json, goofish_cookie_values
+from goofish_z.core.session import (
+    Session,
+    goofish_cookie_values,
+    resolve_cookie_path,
+    update_cookies_json,
+)
 
 HOME_URL = "https://www.goofish.com"
 # 强鉴权页，goto 后服务端必须下发完整 session cookie（cookie2/sgcookie/_tb_token_）
@@ -108,6 +113,9 @@ def refresh_cookies_via_browser(session: Session, *, persist: bool = True) -> bo
     流程见模块 docstring。成功返回 True，否则 False（调用方按 False 走原始
     AuthRequiredError 让上层报给用户）。
     """
+    if not is_enabled():
+        logger.debug("自动刷新已关闭（GOOFISH_AUTO_REFRESH_TOKEN=0），跳过浏览器刷新")
+        return False
     current = {name: value for name, value in session.http.cookies.items() if value}
     try:
         entries = asyncio.run(_refresh_async(current))
@@ -134,13 +142,14 @@ def refresh_cookies_via_browser(session: Session, *, persist: bool = True) -> bo
     session.http.cookies.update(fresh)
 
     if persist:
-        # 尊重 GOOFISH_COOKIES_PATH —— 用户配置了自定义路径时不能写默认路径后再下次
-        # Session.load 又去读自定义路径，造成"刷新了但下次启动又回到旧的"。
-        path = resolve_cookie_path()
+        # 写回本会话实际加载的文件（session.cookie_path），避免多路径部署时刷到别的账号文件。
+        path = resolve_cookie_path(session.cookie_path)
         # 只更新同域同路径的条目，保留其他来源 Cookie 的元数据。
         try:
             update_cookies_json(path, entries)
             logger.info(f"cookie 已刷新并写回 {path}")
         except OSError as e:
-            logger.debug(f"写回 cookies.json 失败（内存里仍生效）：{e}")
+            # 内存里仍生效，但磁盘没写成功就不算完整恢复
+            logger.warning(f"登录态持久化失败: {type(e).__name__}")
+            return False
     return True

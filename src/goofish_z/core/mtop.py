@@ -30,6 +30,8 @@ MTOP_HOST = "https://h5api.m.goofish.com"
 _RISK_KEYWORDS = (
     "RGV587_ERROR",
     "FAIL_SYS_USER_VALIDATE",
+    # ILLEGAL_ACCESS 是访问风控，不是会话过期：救不回来，必须熔断而不是刷新重试
+    "FAIL_SYS_ILLEGAL_ACCESS",
     "哎哟喂",
     "/punish",
 )
@@ -128,7 +130,10 @@ def call(
     except AuthRequiredError as e:
         # 恢复顺序（goofish-omni 增强）：先试 API 层 refresh_token（快、稳），
         # 失败再走 Playwright 免密登录，最后才放弃。
-        if not (_auto_refresh and _is_recoverable_auth_error(e)):
+        from goofish_z.core.refresh import is_enabled
+
+        if not (_auto_refresh and is_enabled() and _is_recoverable_auth_error(e)):
+            # GOOFISH_AUTO_REFRESH_TOKEN=0 时连 API 层刷新都不做：自动恢复整体关闭。
             raise
         if session.refresh_token():
             logger.info(f"[{api}] API 层 refresh_token 成功，重试原请求")
@@ -138,9 +143,7 @@ def call(
                 extra_params=extra_params, headers=headers,
                 _auto_refresh=False,
             )
-        from goofish_z.core.refresh import is_enabled, refresh_cookies_via_browser
-        if not is_enabled():
-            raise
+        from goofish_z.core.refresh import refresh_cookies_via_browser
         logger.info(f"[{api}] API 刷新失败，尝试 Playwright 免密登录刷新 cookie…")
         if not refresh_cookies_via_browser(session):
             raise
