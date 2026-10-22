@@ -7,6 +7,7 @@ import asyncio
 from typing import Any, Literal
 
 from goofish_z.core import Session, Strategy, command
+from goofish_z.core.errors import GoofishError
 from goofish_z.core.guard import watch
 from goofish_z.core.limiter import acquire
 from goofish_z.core.token import get_access_token
@@ -45,7 +46,7 @@ def send(
 ) -> dict[str, Any]:
     session = Session.load()
     with acquire("write"), watch():
-        return asyncio.run(_send(
+        result = asyncio.run(_send(
             session,
             cid=cid,
             toid=toid,
@@ -56,6 +57,14 @@ def send(
             image_height=image_height,
             item_id=item_id,
         ))
+        # _send/_apply_ack 保留结构化结果供内部使用；公开命令必须用异常传递失败，
+        # 否则 CLI 会退出 0，MCP 也会把 ok=False 当成成功工具结果。
+        if result.get("ok") is not True:
+            raise GoofishError(
+                f"消息发送未确认：{result.get('error', 'unknown')} (mid={result.get('mid', '')})",
+                raw=result,
+            )
+        return result
 
 
 async def _send(

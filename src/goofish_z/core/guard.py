@@ -31,7 +31,11 @@ DEFAULT_LEVEL = "med"
 
 # 硬风控关键词 → hard；接口风控 → med；其余 → soft
 _HARD_KEYWORDS = ("RGV587", "哎哟喂", "被挤爆", "punish", "PUNISH")
-_MED_KEYWORDS = ("FAIL_SYS_USER_VALIDATE", "USER_VALIDATE", "验证码", "滑块", "安全验证", "异常访问")
+_MED_KEYWORDS = (
+    "FAIL_SYS_USER_VALIDATE",
+    "FAIL_SYS_ILLEGAL_ACCESS",  # mtop 和 refresh_token 共享识别；禁止风控后继续浏览器刷新
+    "USER_VALIDATE", "验证码", "滑块", "安全验证", "异常访问",
+)
 
 
 def looks_like_risk(ret_str: str) -> bool:
