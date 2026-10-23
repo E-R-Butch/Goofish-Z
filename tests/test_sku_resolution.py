@@ -20,33 +20,33 @@ class SkuResolutionTest(OfflineCase):
 
     def test_skus_are_attached_from_get_item(self):
         item = {"item_id": "synthetic-item-1", "title": "多规格显卡", "price": "¥1000"}
-        with patch.object(self.item_get, "get", return_value={"skus": SKUS}):
+        with patch.object(self.item_get, "_get", return_value={"skus": SKUS}):
             self.search_mod._attach_item_skus(item)
         self.assertEqual(item["skus"], SKUS)
 
     def test_legacy_skulist_key_is_still_accepted(self):
         item = {"item_id": "synthetic-item-2", "title": "多规格显卡", "price": "¥1000"}
-        with patch.object(self.item_get, "get", return_value={"skuList": SKUS}):
+        with patch.object(self.item_get, "_get", return_value={"skuList": SKUS}):
             self.search_mod._attach_item_skus(item)
         self.assertEqual(item["skus"], SKUS)
 
     def test_detail_failure_keeps_item_untouched(self):
         item = {"item_id": "synthetic-item-3", "title": "多规格显卡", "price": "¥1000"}
         before = dict(item)
-        with patch.object(self.item_get, "get", side_effect=RuntimeError("rate limited")):
+        with patch.object(self.item_get, "_get", side_effect=RuntimeError("rate limited")):
             self.search_mod._attach_item_skus(item)
         self.assertEqual(item, before)
         self.assertNotIn("skus", item)
 
     def test_item_without_id_is_skipped(self):
         item = {"title": "无 id", "price": "¥1000"}
-        with patch.object(self.item_get, "get", side_effect=AssertionError("should not fetch")):
+        with patch.object(self.item_get, "_get", side_effect=AssertionError("should not fetch")):
             self.search_mod._attach_item_skus(item)
         self.assertNotIn("skus", item)
 
     def test_empty_skus_are_not_attached(self):
         item = {"item_id": "synthetic-item-4", "title": "多规格显卡", "price": "¥1000"}
-        with patch.object(self.item_get, "get", return_value={"skus": []}):
+        with patch.object(self.item_get, "_get", return_value={"skus": []}):
             self.search_mod._attach_item_skus(item)
         self.assertNotIn("skus", item)
 
@@ -59,7 +59,7 @@ class SkuResolutionTest(OfflineCase):
             patch.object(self.search_mod, "filter_search_items", return_value=([item], [])),
             patch("goofish_z.core.limiter.check"),
             patch("goofish_z.core.guard.check"),
-            patch.object(self.item_get, "get", return_value={"skus": SKUS}),
+            patch.object(self.item_get, "_get", return_value={"skus": SKUS}),
         ):
             result = self.search_mod.search(
                 "多规格 显卡", resolve_skus=True, filter_blacklist=False

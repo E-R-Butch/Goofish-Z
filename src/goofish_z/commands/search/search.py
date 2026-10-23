@@ -11,14 +11,18 @@ brand / location / badge / url / extra`。
 from __future__ import annotations
 
 import asyncio
+import math
 import re
+import time
 from typing import Any
 
 from loguru import logger
 
 from goofish_z.core import Strategy, command
 from goofish_z.core.browser import auto_scroll, goofish_page
-from goofish_z.core.errors import AuthRequiredError, GoofishError
+from goofish_z.core.errors import (
+    AuthRequiredError, BlockedError, GoofishError, RateLimitedError, RiskControlError,
+)
 from goofish_z.core.price import normalize_price
 from goofish_z.core.search_sort import (
     observe_sorted_action, select_native_sort, validate_sort, verify_sorted_items,
@@ -26,6 +30,8 @@ from goofish_z.core.search_sort import (
 
 MAX_LIMIT = 50
 MAX_PAGE = 50
+MAX_SKU_DETAILS = 3
+MAX_SKU_WAIT_SECONDS = 12.0
 
 
 def _normalize_limit(value: Any) -> int:
@@ -356,25 +362,107 @@ def _check_payload(payload: Any, query: str | None = None) -> None:
         raise GoofishError("闲鱼页面关键词与本次搜索不一致，已丢弃结果，请重新搜索")
 
 
-def _attach_item_skus(item: dict[str, Any]) -> None:
-    """按 item_id 拉商品详情，把真实规格挂到搜索结果条目上。
+def _attach_item_skus(item: dict[str, Any]) -> str:
+    """Attach normalized SKUs; classify an optional per-item failure without raw data.
 
-    get_item 顶层返回的是 ``skus``（``_extract_skus`` 的产物），``skuList`` 只存在于
-    它返回的 ``raw`` 里。早先这里判断 ``"skuList" in details`` 恒为假，导致
-    ``--resolve-skus`` 从未真正补全过规格。单条详情失败只记日志，不中断整页搜索。
+    Authentication, risk and rate errors must reach the enrichment coordinator so
+    it stops the remaining requests instead of silently repeating them.
     """
     if not item.get("item_id"):
-        return
+        return "missing_id"
     try:
-        from goofish_z.commands.item.get import get as get_item
+        from goofish_z.commands.item.get import _get as get_item
 
-        # get_item 自带 5s rate_check("detail") 限流
-        details = get_item(item["item_id"])
+        # get_item owns the atomic detail reservation. Never pre-consume its slot.
+        details = get_item(item["item_id"], auto_refresh=False)
         skus = details.get("skus") or details.get("skuList")
         if skus:
             item["skus"] = skus
-    except Exception as e:  # noqa: BLE001 — 单条失败不该拖垮整页结果
-        logger.debug(f"[search] 补全 {item.get('item_id')} 规格失败，跳过：{e}")
+            return "resolved"
+        return "without_skus"
+    except (AuthRequiredError, BlockedError, RiskControlError, RateLimitedError):
+        raise
+    except Exception as error:  # Optional details must not discard the search page.
+        # Exception text/raw payloads can contain account or upstream private data.
+        logger.debug("[search] SKU detail failed: {}", type(error).__name__)
+        return "detail_error"
+
+
+def _batch_median(query: str, items: list[dict[str, Any]]) -> float | None:
+    from goofish_z.core.price import price_value
+
+    if not _mentions_specific_product(query):
+        return None
+    entries = [(item, price) for item in items
+               if (price := price_value(item.get("price"))) is not None]
+    prices = sorted(price for _, price in _median_candidates(query, entries))
+    if not prices:
+        return None
+    mid = len(prices) // 2
+    return prices[mid] if len(prices) % 2 else (prices[mid - 1] + prices[mid]) / 2
+
+
+def _resolve_item_skus(items: list[dict[str, Any]], batch_median: float | None) -> dict[str, Any]:
+    """Bound optional enrichment while keeping the original usable search items.
+
+    The shared limiter still makes the final atomic reservation inside get_item.
+    A concurrent reservation or an upstream limit stops this batch, never retries
+    a possibly completed request. The wait budget covers sleeps, not HTTP timeouts.
+    """
+    from goofish_z.core.guard import check as guard_check
+    from goofish_z.core.limiter import status as rate_status
+    from goofish_z.core.price import price_value
+
+    candidates = []
+    for item in items:
+        title = str(item.get("title", ""))
+        price = price_value(item.get("price"))
+        multi = any(word in title for word in ("多", "选", "套餐", "规格", "配置"))
+        cheap = (batch_median is not None and price is not None
+                 and 500.0 <= price < batch_median * 0.78)
+        if multi or cheap:
+            candidates.append(item)
+    status: dict[str, Any] = {
+        "complete": True, "candidates": len(candidates), "attempted": 0,
+        "resolved": 0, "without_skus": 0, "failed": 0, "skipped": 0,
+        "stop_reason": None, "failures": [],
+    }
+    wait_remaining = MAX_SKU_WAIT_SECONDS
+    for item in candidates:
+        if not item.get("item_id"):
+            status["failures"].append({"item_id": "", "reason": "missing_id"})
+            continue
+        if status["attempted"] >= MAX_SKU_DETAILS:
+            status["stop_reason"] = "detail_budget"
+            break
+        try:
+            guard_check()
+            delay = rate_status()["detail"]["next_available_in"]
+            if delay > 0:
+                delay += 0.05  # Avoid retrying just before the shared window closes.
+                if not math.isfinite(delay) or delay > wait_remaining:
+                    status["stop_reason"] = "wait_budget"
+                    break
+                time.sleep(delay)
+                wait_remaining -= delay
+                guard_check()
+            status["attempted"] += 1
+            outcome = _attach_item_skus(item)
+        except (AuthRequiredError, BlockedError, RiskControlError, RateLimitedError) as error:
+            reason = ("auth_required" if isinstance(error, AuthRequiredError)
+                      else "risk_control" if isinstance(error, (RiskControlError, BlockedError))
+                      else "rate_limited")
+            status["stop_reason"] = reason
+            status["failures"].append({"item_id": item["item_id"], "reason": reason})
+            break
+        if outcome in ("resolved", "without_skus"):
+            status[outcome] += 1
+        else:
+            status["failures"].append({"item_id": item["item_id"], "reason": outcome})
+    status["failed"] = len(status["failures"])
+    status["skipped"] = len(candidates) - status["attempted"]
+    status["complete"] = not status["failures"] and not status["skipped"]
+    return status
 
 
 def _filtered_item(item: dict[str, Any], reasons: list[str]) -> dict[str, Any]:
@@ -444,42 +532,17 @@ def search(
     fetched_count = len(items)
     items, excluded = filter_search_items(str(query).strip(), items)
 
-    # 低价值与虚假套路过滤 (基于价格-价值匹配引擎: 纯展示不出 / 单价虚标引流 / 严重故障残次 / 跨型号引流 / 溢价暗病)
+    # SKU resolution is optional and independent of the value filter. Use a real
+    # comparable sample only; broad queries have no invented reference price.
+    batch_median = _batch_median(str(query), items) if filter_low_value or resolve_skus else None
+    sku_resolution = _resolve_item_skus(items, batch_median) if resolve_skus else None
+
     if filter_low_value:
         from goofish_z.price_value_engine import PriceValueEngine
-        from goofish_z.core.price import price_value
-
-        price_entries = []
-        for it in items:
-            p = price_value(it.get("price"))
-            if p is not None:
-                price_entries.append((it, p))
-        # 仅在查询包含具体型号/规格（如 90HX, 3080, 4090 或具体显存）时计算同款中位数
-        # 对宽泛搜索（如单纯搜“显卡”、“手机”），不强制计算跨型号混合中位数，避免高档商品被低端混杂池误杀
-        # 基准只从可比样本推导：剔除低价配件样本；查询带变体词时只取同变体样本
-        has_specific_model = _mentions_specific_product(query)
-        batch_median = None
-        if price_entries and has_specific_model:
-            candidates = _median_candidates(str(query), price_entries)
-            med_prices = sorted(p for _, p in candidates)
-            _mid = len(med_prices) // 2
-            if len(med_prices) % 2:
-                batch_median = med_prices[_mid]
-            else:
-                batch_median = (med_prices[_mid - 1] + med_prices[_mid]) / 2
 
         pv_engine = PriceValueEngine()
         filtered = []
         for it in items:
-            if resolve_skus and "item_id" in it:
-                p = price_value(it.get("price"))
-                base = batch_median or 1000.0
-                title = it.get("title", "")
-                might_be_multi = any(w in title for w in ("多", "选", "套餐", "规格", "配置"))
-                deep_cheap = (p is not None and 500.0 <= p < base * 0.78)
-                if might_be_multi or deep_cheap:
-                    _attach_item_skus(it)
-
             assessment = pv_engine.assess(it, query=str(query), batch_median=batch_median)
             if assessment.tags:
                 it.setdefault("tags", []).extend(assessment.tags)
@@ -494,6 +557,9 @@ def search(
         "filtered_count": fetched_count - len(items),
         "filtered": excluded,
     }
+
+    if sku_resolution is not None:
+        result["sku_resolution"] = sku_resolution
 
     if filter_blacklist:
         from goofish_z.blacklist import BlacklistDB
