@@ -30,6 +30,7 @@ from loguru import logger
 
 from goofish_z.core.session import (
     Session,
+    _check_cookie_account,
     goofish_cookie_values,
     resolve_cookie_path,
     update_cookies_json,
@@ -116,6 +117,7 @@ def refresh_cookies_via_browser(session: Session, *, persist: bool = True) -> bo
     if not is_enabled():
         logger.debug("自动刷新已关闭（GOOFISH_AUTO_REFRESH_TOKEN=0），跳过浏览器刷新")
         return False
+    expected_version = session._refresh_snapshot()
     current = {name: value for name, value in session.http.cookies.items() if value}
     try:
         entries = asyncio.run(_refresh_async(current))
@@ -132,6 +134,25 @@ def refresh_cookies_via_browser(session: Session, *, persist: bool = True) -> bo
         )
         return False
 
+    _check_cookie_account(entries, session.unb)
+
+    if persist:
+        # 写回本会话实际加载的文件（session.cookie_path），避免多路径部署时刷到别的账号文件。
+        path = resolve_cookie_path(session.cookie_path)
+        # 只更新同域同路径的条目，保留其他来源 Cookie 的元数据。
+        try:
+            session.cookie_version = update_cookies_json(
+                path, entries, expected_version=expected_version, expected_unb=session.unb,
+            )
+            logger.info(f"cookie 已刷新并写回 {path}")
+        except OSError as e:
+            # 磁盘提交失败时不更新内存，也不报告恢复成功
+            logger.warning(f"登录态持久化失败: {type(e).__name__}")
+            return False
+    else:
+        # Even an in-memory refresh must not silently switch the active account.
+        session._refresh_snapshot()
+
     # 关键：直接 `update(fresh)` 会造成跨 domain 同名 cookie 并存（如 .goofish.com 下
     # 一份旧 _m_h5_tk + Playwright 又写入一份新的），后续 `cookies.get(name)` 会抛
     # "There are multiple cookies with name"。所以先删掉所有将被更新的 name 的旧条目。
@@ -141,15 +162,4 @@ def refresh_cookies_via_browser(session: Session, *, persist: bool = True) -> bo
             session.http.cookies.clear(domain=cookie.domain, path=cookie.path, name=cookie.name)
     session.http.cookies.update(fresh)
 
-    if persist:
-        # 写回本会话实际加载的文件（session.cookie_path），避免多路径部署时刷到别的账号文件。
-        path = resolve_cookie_path(session.cookie_path)
-        # 只更新同域同路径的条目，保留其他来源 Cookie 的元数据。
-        try:
-            update_cookies_json(path, entries)
-            logger.info(f"cookie 已刷新并写回 {path}")
-        except OSError as e:
-            # 内存里仍生效，但磁盘没写成功就不算完整恢复
-            logger.warning(f"登录态持久化失败: {type(e).__name__}")
-            return False
     return True

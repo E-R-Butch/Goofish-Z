@@ -12,6 +12,15 @@ from filelock import FileLock
 from goofish_z.core.errors import GoofishError
 
 
+def file_version(path: Path) -> list[int] | None:
+    """Identify a local file revision without reading or hashing its contents."""
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    return [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
+
+
 @contextmanager
 def state_lock(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)

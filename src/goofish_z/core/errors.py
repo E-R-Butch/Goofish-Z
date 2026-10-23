@@ -25,6 +25,10 @@ class AuthRequiredError(GoofishError):
     exit_code = 77
 
 
+class SessionChangedError(GoofishError):
+    """A newer local login replaced the credentials used by an in-flight request."""
+
+
 class UpstreamError(GoofishError):
     """上游响应不符合契约：缺 ret、ret 为空、不是 JSON 对象。
 
