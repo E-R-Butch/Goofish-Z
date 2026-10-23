@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import json
+import math
 import time
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 from loguru import logger
@@ -17,6 +19,7 @@ from goofish_z.core.errors import (
     AuthRequiredError,
     GoofishError,
     NotFoundError,
+    RateLimitedError,
     RiskControlError,
     SignError,
     UpstreamError,
@@ -118,7 +121,16 @@ def call(
         data={"data": data_val},
         timeout=30,
     )
-    raw = resp.json()
+    # A gateway may rate-limit with an HTML/empty response, not an mtop envelope.
+    if resp.status_code == 429:
+        raise RateLimitedError(
+            f"[{api}] 上游请求限流 (HTTP 429)",
+            retry_after=_retry_after_seconds(resp.headers.get("Retry-After")),
+        )
+    try:
+        raw = resp.json()
+    except ValueError as e:
+        raise UpstreamError(f"[{api}] 响应不是有效 JSON") from e
     try:
         _classify_error(raw, api)
     except RiskControlError as e:
@@ -155,6 +167,23 @@ def call(
             _auto_refresh=False,
         )
     return raw
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    """Accept Retry-After delay seconds or an HTTP date, ignoring invalid values."""
+    if not value:
+        return None
+    try:
+        delay = float(value)
+    except (TypeError, ValueError):
+        try:
+            date = parsedate_to_datetime(value)
+            if date.tzinfo is None:
+                return None
+            delay = date.timestamp() - time.time()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return max(0.0, delay) if math.isfinite(delay) else None
 
 
 def _is_recoverable_auth_error(e: AuthRequiredError) -> bool:
@@ -201,6 +230,8 @@ def _classify_error(raw: Any, api: str) -> None:
                 f"[{api}] 触发风控：{ret_str}",
                 raw=raw,
             )
+    if "FAIL_SYS_TRAFFIC_LIMIT" in ret_str:
+        raise RateLimitedError(f"[{api}] 上游请求限流：{ret_str}", raw=raw)
     for kw in _AUTH_KEYWORDS:
         if kw in ret_str:
             raise AuthRequiredError(f"[{api}] 登录态失效：{ret_str}", raw=raw)
