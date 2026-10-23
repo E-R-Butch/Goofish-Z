@@ -58,6 +58,20 @@ Web 面板 `http://127.0.0.1:8787`，MCP 入口 `.venv/bin/goofish-z-mcp`。下�
 
 默认输出表格，`--format json` 输出结构化结果，便于管道和 Agent 处理。搜索默认每 30 秒允许一次，网页、CLI、Agent 和后台监控共用同一限额。
 
+### 可选 SKU 补全
+
+`search items ... --resolve-skus --format json` 会对有多规格线索、或相对真实同款中位数明显低价的候选商品补充 SKU；不代表逐条抓取所有搜索结果。该选项与 `--no-filter-low-value` 可以独立组合，宽泛搜索不会使用假设的价格基准。
+
+每次搜索最多尝试 3 条详情，遵守共享 `detail` 限流，并将累计限流等待限制为 12 秒（不包含详情请求本身的超时）。认证、风控或限流失败会立即停止后续补全；其他单条详情失败保留已有搜索结果并继续有限尝试。
+
+启用时，CLI JSON、MCP 和 HTTP 结果新增 `sku_resolution`，原有 `items`、分页和过滤字段不变：
+- `complete`：所有候选的可选补全是否完成；不是登录有效性，也不是全站搜索完整性。
+- `candidates` / `attempted` / `resolved` / `without_skus`：候选数、详情调用尝试数、获取到 SKU 数、成功读取但没有 SKU 的数量。
+- `skipped`：没有尝试详情的候选数；`failed` 和 `failures` 记录失败或无法尝试的原因，不含上游原始响应或异常文本。因此 `failed` 与 `skipped` 可能重叠。
+- `stop_reason`：`auth_required`、`risk_control`、`rate_limited`、`detail_budget`、`wait_budget` 或 `null`。
+
+补全不完整仍以尽力而为方式返回搜索结果（CLI 退出码 0、HTTP 200）；调用方需要读取 `sku_resolution.complete`，不要把搜索成功当成所有 SKU 均已核验。默认表格不展示此元数据，请使用 JSON。未启用补全时不新增该字段。
+
 ## 常用命令
 
 ```bash
