@@ -14,10 +14,12 @@ from goofish_z.core.errors import (
 )
 from goofish_z.core.mtop import call
 from goofish_z.core.paths import runtime_data_path
-from goofish_z.core.state_file import read_state, state_lock, write_state
+from goofish_z.core.state_file import file_version, read_state, state_lock, write_state
 
 
-def _record_check(valid: bool | None, outcome: str, error_type: str | None) -> None:
+def _record_check(
+    valid: bool | None, outcome: str, error_type: str | None, cookie_version: list[int] | None,
+) -> None:
     """记录本次检查结果。valid 是三态：true=通过，false=需要登录，null=无法判定。
 
     风控、限流、网络故障都不是「登录失效」，把它们记成 false 会让用户去重新登录，
@@ -34,6 +36,7 @@ def _record_check(valid: bool | None, outcome: str, error_type: str | None) -> N
             "valid": valid, "outcome": outcome, "checked_at": checked_at,
             "last_success_at": checked_at if valid is True else last_success,
             "error_type": error_type,
+            "cookie_version": cookie_version,
         })
 
 
@@ -46,9 +49,16 @@ def _record_check(valid: bool | None, outcome: str, error_type: str | None) -> N
 )
 def status() -> dict[str, Any]:
     session = None
+    cookie_version = None
     try:
+        path = runtime_data_path("cookies.json")
+        # Bind the result to the credentials loaded, not to the time the request ends.
+        # A concurrent replacement during loading cannot be safely attested.
+        cookie_version = file_version(path)
         # 显式检查不允许顺手导入或修复登录态：否则「验证失败」会被一次隐式恢复掩盖成成功。
         session = Session.load(allow_bootstrap=False)
+        if cookie_version != file_version(path):
+            cookie_version = None
         raw = call(
             session,
             api="mtop.taobao.idlemessage.pc.loginuser.get",
@@ -58,7 +68,7 @@ def status() -> dict[str, Any]:
             _auto_refresh=False,
         )
         user = raw.get("data", {}) or {}
-        _record_check(True, "verified", None)
+        _record_check(True, "verified", None, cookie_version)
         return {
             "unb": session.unb,
             "tracknick": session.tracknick,
@@ -77,7 +87,7 @@ def status() -> dict[str, Any]:
             outcome, valid = "network_error", None
         else:
             outcome, valid = "error", None
-        _record_check(valid, outcome, type(e).__name__)
+        _record_check(valid, outcome, type(e).__name__, cookie_version)
         return {
             "unb": session.unb if session else "",
             "tracknick": session.tracknick if session else "",
