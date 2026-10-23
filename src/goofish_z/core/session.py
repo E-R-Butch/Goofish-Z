@@ -8,17 +8,19 @@ from __future__ import annotations
 import json
 import os
 import time as _time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import requests
 from loguru import logger
 
-from goofish_z.core.errors import AuthRequiredError, RateLimitedError, RiskControlError
+from goofish_z.core.errors import (
+    AuthRequiredError, RateLimitedError, RiskControlError, SessionChangedError,
+)
 from goofish_z.core.paths import runtime_data_path
 from goofish_z.core.sign import generate_device_id, generate_sign
-from goofish_z.core.state_file import state_lock, write_state
+from goofish_z.core.state_file import file_version, state_lock, write_state
 
 
 def resolve_cookie_path(cookie_path: Path | str | None = None) -> Path:
@@ -34,6 +36,8 @@ USER_AGENT = (
 
 # 兼容上游命名
 DEFAULT_COOKIE_PATH = resolve_cookie_path()
+_UNCHECKED = object()
+_SESSION_CHANGED = "登录态已更新，本次旧会话请求已停止；请重新执行命令"
 
 
 @dataclass
@@ -44,6 +48,7 @@ class Session:
     device_id: str
     # 会话实际加载的文件；刷新要写回同一份，否则多路径部署会写到别的账号文件
     cookie_path: Path | None = None
+    cookie_version: list[int] | None | object = field(default=_UNCHECKED, repr=False)
 
     @classmethod
     def load(cls, cookie_path: Path | str | None = None, *, allow_bootstrap: bool = True) -> Session:
@@ -54,7 +59,12 @@ class Session:
         """
         path = resolve_cookie_path(cookie_path)
 
-        cookies = _load_or_bootstrap_cookies(path, allow_bootstrap=allow_bootstrap)
+        _load_or_bootstrap_cookies(path, allow_bootstrap=allow_bootstrap)
+        # Reload under the writer lock so the cookies and revision are one snapshot.
+        # Bootstrap (which can inspect a browser) must not hold this lock.
+        with state_lock(path):
+            cookies = _load_cookies(path)
+            cookie_version = file_version(path)
 
         if "unb" not in cookies or "_m_h5_tk" not in cookies:
             raise AuthRequiredError(
@@ -74,7 +84,20 @@ class Session:
             tracknick=cookies.get("tracknick", ""),
             device_id=_load_or_mint_device_id(cookies["unb"], path.parent / "device_id.json"),
             cookie_path=path,
+            cookie_version=cookie_version,
         )
+
+    def _refresh_snapshot(self) -> list[int] | None:
+        """Pin the local generation before I/O; never refresh an obsolete session."""
+        path = resolve_cookie_path(self.cookie_path)
+        with state_lock(path):
+            version = file_version(path)
+            if self.cookie_version is not _UNCHECKED and version != self.cookie_version:
+                raise SessionChangedError(_SESSION_CHANGED)
+            if version is not None:
+                _check_cookie_account(json.loads(path.read_text(encoding="utf-8")), self.unb)
+            self.cookie_version = version
+            return version
 
     @property
     def h5_token(self) -> str:
@@ -99,6 +122,7 @@ class Session:
         if not self.http.cookies.get("unb"):
             return False
 
+        expected_version = self._refresh_snapshot()
         api = "mtop.taobao.idlemessage.pc.loginuser.get"
         params = {
             "jsv": "2.7.2",
@@ -148,13 +172,19 @@ class Session:
 
                 try:
                     # 写回本会话实际加载的文件；持久化失败不能报告完整恢复成功
-                    update_cookies_json(resolve_cookie_path(self.cookie_path), _jars_to_entries([resp.cookies]))
+                    self.cookie_version = update_cookies_json(
+                        resolve_cookie_path(self.cookie_path), _jars_to_entries([resp.cookies]),
+                        expected_version=expected_version, expected_unb=self.unb,
+                    )
+                except SessionChangedError:
+                    # Do not fall back to another refresh after an explicit newer login.
+                    raise
                 except Exception as e:  # noqa: BLE001
                     logger.warning(f"登录态持久化失败: {type(e).__name__}")
                     return False
             return ok
-        except (RiskControlError, RateLimitedError):
-            # 风控和限流必须穿透，不能继续浏览器恢复或再次请求。
+        except (RiskControlError, RateLimitedError, SessionChangedError):
+            # 风控、限流和会话替换必须穿透，不能继续浏览器恢复或再次请求。
             raise
         except Exception as e:  # noqa: BLE001
             logger.warning(f"refresh_token 异常: {e}")
@@ -181,23 +211,25 @@ def _load_or_bootstrap_cookies(path: Path, *, allow_bootstrap: bool = True) -> d
     GOOFISH_NO_CHROME_BOOTSTRAP=1。认证检查必须能关掉这一步，否则「验证失败」会被
     一次隐式恢复掩盖成成功。
     """
-    cached_account = None
-    if path.exists():
-        try:
-            cookies = _load_cookies(path)
-            if cookies.get("unb") and cookies.get("_m_h5_tk"):
-                return cookies
-            # Expired identity is only an account guard, never a usable credential.
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(raw, list):
-                for c in raw:
-                    if isinstance(c, dict) and c.get("name") == "unb" and c.get("value"):
-                        cached_account = str(c.get("value"))
-                        break
-            elif isinstance(raw, dict):
-                cached_account = raw.get("unb")
-        except (AuthRequiredError, json.JSONDecodeError):
-            pass
+    with state_lock(path):
+        expected_version = file_version(path)
+        cached_account = None
+        if path.exists():
+            try:
+                cookies = _load_cookies(path)
+                if cookies.get("unb") and cookies.get("_m_h5_tk"):
+                    return cookies
+                # Expired identity is only an account guard, never a usable credential.
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(raw, list):
+                    for c in raw:
+                        if isinstance(c, dict) and c.get("name") == "unb" and c.get("value"):
+                            cached_account = str(c.get("value"))
+                            break
+                elif isinstance(raw, dict):
+                    cached_account = raw.get("unb")
+            except (AuthRequiredError, json.JSONDecodeError):
+                pass
     from goofish_z.core.refresh import is_enabled
 
     if not allow_bootstrap:
@@ -220,22 +252,31 @@ def _load_or_bootstrap_cookies(path: Path, *, allow_bootstrap: bool = True) -> d
                 logger.debug("Chrome cookie 缺少 cookie2（会话不完整），不覆盖缓存")
             else:
                 logger.info("从本机 Chrome 自动抓取到 cookie")
-                write_cookies_json(path, entries)
+                write_cookies_json(path, entries, expected_version=expected_version)
                 return cookies
-    except AuthRequiredError:
+    except (AuthRequiredError, SessionChangedError):
         raise
     except Exception as e:  # noqa: BLE001
         logger.debug(f"Chrome cookie 自动抓取失败: {e}")
     raise AuthRequiredError(f"未找到有效 cookie，请先执行 goofish-z auth login（或检查 {path}）")
 
 
-def write_cookies_json(path: Path, cookies: dict[str, str] | list[dict[str, Any]]) -> None:
+def write_cookies_json(
+    path: Path, cookies: dict[str, str] | list[dict[str, Any]], *,
+    expected_version: list[int] | None | object = _UNCHECKED,
+) -> list[int] | None:
     """写入 cookie 文件。支持两种格式：
     - dict {name: value} — 闲鱼请求 Cookie 头，默认 .goofish.com
     - list [{name,value,domain,path,secure,httpOnly}] — 保留完整字段（扫码路径）
 
     原子写：中途失败不会留下半个 cookie 文件，旧文件仍然可用。
     """
+    with state_lock(path):
+        _check_cookie_version(path, expected_version)
+        return _write_cookies_json_unlocked(path, cookies)
+
+
+def _write_cookies_json_unlocked(path: Path, cookies: dict[str, str] | list[dict[str, Any]]) -> list[int] | None:
     if isinstance(cookies, dict):
         payload = [
             {"name": k, "value": v}
@@ -245,6 +286,7 @@ def write_cookies_json(path: Path, cookies: dict[str, str] | list[dict[str, Any]
     else:
         payload = list(cookies)
     write_state(path, payload)
+    return file_version(path)
 
 
 def goofish_cookie_values(cookies: dict[str, str] | list[dict[str, Any]]) -> dict[str, str]:
@@ -269,20 +311,42 @@ def goofish_cookie_values(cookies: dict[str, str] | list[dict[str, Any]]) -> dic
     return values
 
 
-def update_cookies_json(path: Path, fresh: list[dict[str, Any]]) -> None:
+def _check_cookie_version(path: Path, expected_version: list[int] | None | object) -> None:
+    if expected_version is not _UNCHECKED and file_version(path) != expected_version:
+        raise SessionChangedError(_SESSION_CHANGED)
+
+
+def _check_cookie_account(cookies: dict[str, str] | list[dict[str, Any]], expected_unb: str) -> None:
+    account = goofish_cookie_values(cookies).get("unb")
+    if not account and isinstance(cookies, list):
+        # Only fall back to expired identity when there is no current identity.
+        account = goofish_cookie_values([{**c, "expires": None} for c in cookies]).get("unb")
+    if account and account != expected_unb:
+        raise SessionChangedError(_SESSION_CHANGED)
+
+
+def update_cookies_json(
+    path: Path, fresh: list[dict[str, Any]], *,
+    expected_version: list[int] | None | object = _UNCHECKED,
+    expected_unb: str | None = None,
+) -> list[int] | None:
     """Refresh only matching name/domain/path entries; keep other origins intact.
 
     读-合并-写整段持锁：并发刷新不会互相覆盖，也不会读到写了一半的文件。
     """
     with state_lock(path):
+        _check_cookie_version(path, expected_version)
         existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        if expected_unb is not None:
+            _check_cookie_account(existing, expected_unb)
+            _check_cookie_account(fresh, expected_unb)
         if isinstance(existing, dict):
             existing = [{"name": k, "value": v} for k, v in existing.items()]
         merged = {}
         for cookie in [*existing, *fresh]:
             entry = {**cookie, "domain": cookie.get("domain") or ".goofish.com", "path": cookie.get("path") or "/"}
             merged[(entry["name"], entry["domain"], entry["path"])] = entry
-        write_cookies_json(path, list(merged.values()))
+        return _write_cookies_json_unlocked(path, list(merged.values()))
 
 
 def _load_or_mint_device_id(unb: str, cache_path: Path | None = None) -> str:
