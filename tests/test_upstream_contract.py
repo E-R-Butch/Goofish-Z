@@ -69,6 +69,8 @@ class UpstreamContractTest(OfflineCase):
         session.http.cookies.get.return_value = "synthetic-token"
         response = MagicMock()
         response.cookies = []
+        response.status_code = 200
+        response.headers = {}
         response.json.return_value = payload
         session.http.post.return_value = response
         return session
@@ -81,9 +83,10 @@ class UpstreamContractTest(OfflineCase):
         self.assertTrue(state["tripped"])
         self.assertEqual(state["level"], "hard")
 
-    def test_refresh_token_failure_without_risk_does_not_trip(self):
+    def test_refresh_token_rate_limit_propagates_without_tripping_risk(self):
         session = self._session_with({"ret": ["FAIL_SYS_TRAFFIC_LIMIT::限流"]})
-        self.assertFalse(session.refresh_token())
+        with self.assertRaises(self.errors.RateLimitedError):
+            session.refresh_token()
         self.assertFalse(self.guard.status()["tripped"])
 
     def test_refresh_token_success_returns_true(self):
