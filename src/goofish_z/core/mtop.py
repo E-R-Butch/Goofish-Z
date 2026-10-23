@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import json
+import math
 import time
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 from loguru import logger
@@ -17,6 +19,7 @@ from goofish_z.core.errors import (
     AuthRequiredError,
     GoofishError,
     NotFoundError,
+    RateLimitedError,
     RiskControlError,
     SignError,
     UpstreamError,
@@ -118,9 +121,13 @@ def call(
         data={"data": data_val},
         timeout=30,
     )
-    raw = resp.json()
+    _raise_for_http_rate_limit(resp, api)
     try:
-        _classify_error(raw, api)
+        raw = resp.json()
+    except ValueError as e:
+        raise UpstreamError(f"[{api}] 响应不是有效 JSON") from e
+    try:
+        _classify_error(raw, api, retry_after=_retry_after_seconds(resp.headers.get("Retry-After")))
     except RiskControlError as e:
         # 风控：自动熔断（分级冷却）+ 记录来源 API，然后抛出
         from goofish_z.core.guard import trip
@@ -157,6 +164,41 @@ def call(
     return raw
 
 
+def _raise_for_http_rate_limit(response: Any, api: str) -> None:
+    """Shared by normal calls and token refresh, before JSON/cookie processing."""
+    if response.status_code == 429:
+        raise RateLimitedError(
+            f"[{api}] 上游请求限流 (HTTP 429)",
+            retry_after=_retry_after_seconds(response.headers.get("Retry-After")),
+        )
+
+
+def _raise_for_traffic_limit(
+    ret: str, api: str, raw: dict, *, retry_after: float | None = None,
+) -> None:
+    if "FAIL_SYS_TRAFFIC_LIMIT" in ret:
+        raise RateLimitedError(
+            f"[{api}] 上游请求限流：{ret}", raw=raw, retry_after=retry_after,
+        )
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    """Accept Retry-After delay seconds or an HTTP date, ignoring invalid values."""
+    if not value:
+        return None
+    try:
+        delay = float(value)
+    except (TypeError, ValueError):
+        try:
+            date = parsedate_to_datetime(value)
+            if date.tzinfo is None:
+                return None
+            delay = date.timestamp() - time.time()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return max(0.0, delay) if math.isfinite(delay) else None
+
+
 def _is_recoverable_auth_error(e: AuthRequiredError) -> bool:
     """可通过 Playwright 自动刷新恢复的登录态失效错误码。
 
@@ -173,7 +215,7 @@ def _is_recoverable_auth_error(e: AuthRequiredError) -> bool:
     ))
 
 
-def _classify_error(raw: Any, api: str) -> None:
+def _classify_error(raw: Any, api: str, *, retry_after: float | None = None) -> None:
     """根据 ret 字段分类抛异常。成功则不抛。
 
     契约：raw 必须是 JSON 对象且带 ret。缺字段、ret 为空、类型异常一律按上游
@@ -201,6 +243,7 @@ def _classify_error(raw: Any, api: str) -> None:
                 f"[{api}] 触发风控：{ret_str}",
                 raw=raw,
             )
+    _raise_for_traffic_limit(ret_str, api, raw, retry_after=retry_after)
     for kw in _AUTH_KEYWORDS:
         if kw in ret_str:
             raise AuthRequiredError(f"[{api}] 登录态失效：{ret_str}", raw=raw)

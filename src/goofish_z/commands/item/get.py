@@ -68,16 +68,22 @@ def _consumer_detail(item: dict[str, Any]) -> dict[str, Any]:
     columns=["item_id", "title", "price", "seller_nick", "status"],
 )
 def get(item_id: str) -> dict[str, Any]:
+    return _get(item_id)
+
+
+def _get(item_id: str, *, auto_refresh: bool = True) -> dict[str, Any]:
+    """Internal read policy; optional enrichment must not recover credentials."""
     from goofish_z.core.limiter import check as rate_check
 
     rate_check("detail")
-    session = Session.load()
+    session = Session.load(allow_bootstrap=auto_refresh)
     raw = call(
         session,
         api="mtop.taobao.idle.pc.detail",
         data={"itemId": str(item_id)},
         version="1.0",
         spm_cnt="a21ybx.item.0.0",
+        _auto_refresh=auto_refresh,
     )
     data = raw.get("data", {}) or {}
     item = data.get("itemDO", {}) or {}

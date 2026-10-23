@@ -79,7 +79,7 @@ class RefreshAccountRaceTest(unittest.TestCase):
                     jar = requests.cookies.RequestsCookieJar()
                     # Real refresh responses need not repeat the account ID.
                     jar.set("_m_h5_tk", "synthetic-refreshed_0", domain=".goofish.com", path="/")
-                    return SimpleNamespace(cookies=jar, json=lambda: {"ret": ["SUCCESS::ok"]})
+                    return SimpleNamespace(status_code=200, headers={}, cookies=jar, json=lambda: {"ret": ["SUCCESS::ok"]})
 
                 with patch.object(loaded.http, "post", side_effect=in_flight):
                     with self.assertRaises(SessionChangedError):
@@ -136,7 +136,7 @@ class RefreshAccountRaceTest(unittest.TestCase):
         for token in ("synthetic-refresh-1", "synthetic-refresh-2"):
             jar = requests.cookies.RequestsCookieJar()
             jar.set("_m_h5_tk", token + "_0", domain=".goofish.com", path="/")
-            response = SimpleNamespace(cookies=jar, json=lambda: {"ret": ["SUCCESS::ok"]})
+            response = SimpleNamespace(status_code=200, headers={}, cookies=jar, json=lambda: {"ret": ["SUCCESS::ok"]})
             with patch.object(self.loaded.http, "post", return_value=response):
                 self.assertTrue(self.loaded.refresh_token())
             self.assertEqual(self.loaded.cookie_version, file_version(self.path))
@@ -187,7 +187,7 @@ class RefreshAccountRaceTest(unittest.TestCase):
         jar.set("_m_h5_tk", "synthetic-refreshed_0", domain=".goofish.com", path="/")
         def stale_refresh(*args, **kwargs):
             self.import_login()
-            return SimpleNamespace(cookies=jar, json=lambda: {"ret": ["SUCCESS::ok"]})
+            return SimpleNamespace(status_code=200, headers={}, cookies=jar, json=lambda: {"ret": ["SUCCESS::ok"]})
         with patch.object(self.loaded.http, "post") as post:
             post.side_effect = lambda *args, **kwargs: expired if post.call_count == 1 else stale_refresh()
             with patch.object(refresh, "refresh_cookies_via_browser") as browser, \

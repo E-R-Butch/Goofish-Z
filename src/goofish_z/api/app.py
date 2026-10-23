@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 
@@ -16,7 +17,7 @@ from loguru import logger
 
 from goofish_z.core.registry import discover, iter_commands
 from goofish_z import __version__
-from goofish_z.core.errors import AuthRequiredError, GoofishError, NotFoundError, RateLimitedError, RiskControlError
+from goofish_z.core.errors import AuthRequiredError, GoofishError, NotFoundError, RateLimitedError, RiskControlError, UpstreamError
 from goofish_z.api.models import RuleAdd, RuleRemove, SellerUnban, WatchAdd, WatchRun
 from goofish_z.api.jobs import JobBusyError, WatchJobs
 
@@ -54,7 +55,7 @@ def _call_command(full_name: str, params: dict[str, Any]) -> Any:
     try:
         return cmd.func(*bound.args, **bound.kwargs)
     except RateLimitedError as e:
-        retry_after = max(1, int((e.retry_after or 1) + 0.999))
+        retry_after = max(1, math.ceil(e.retry_after or 1))
         raise HTTPException(
             429,
             "请求过于频繁，请稍后重试",
@@ -66,6 +67,8 @@ def _call_command(full_name: str, params: dict[str, Any]) -> Any:
         raise HTTPException(503, str(e)) from e
     except NotFoundError as e:
         raise HTTPException(404, str(e)) from e
+    except UpstreamError as e:
+        raise HTTPException(502, str(e)) from e
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
     except GoofishError as e:

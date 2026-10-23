@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from support import OfflineCase
+from goofish_z.core.state_file import file_version
 
 
 class AuthStatusOutcomeTest(OfflineCase):
@@ -90,7 +91,8 @@ class AuthSummaryStateTest(OfflineCase):
         checked = time.time() - 5
         os.utime(self.cookies, (checked - 10, checked - 10))
         summary = self.doctor._auth_summary(
-            {"valid": True, "outcome": "verified", "checked_at": checked}, {"tripped": False}
+            {"valid": True, "outcome": "verified", "checked_at": checked,
+             "cookie_version": file_version(self.cookies)}, {"tripped": False}
         )
         self.assertEqual(summary["state"], "verified")
         self.assertIs(summary["valid"], True)
@@ -101,7 +103,8 @@ class AuthSummaryStateTest(OfflineCase):
         checked = time.time() - 3600
         os.utime(self.cookies, (checked - 10, checked - 10))
         summary = self.doctor._auth_summary(
-            {"valid": True, "outcome": "verified", "checked_at": checked}, {"tripped": False}
+            {"valid": True, "outcome": "verified", "checked_at": checked,
+             "cookie_version": file_version(self.cookies)}, {"tripped": False}
         )
         self.assertEqual(summary["state"], "stale")
         self.assertIsNone(summary["valid"])
@@ -110,9 +113,11 @@ class AuthSummaryStateTest(OfflineCase):
     def test_cookie_file_newer_than_check_means_changed(self):
         self._write_cookies()
         checked = time.time() - 60
+        checked_version = file_version(self.cookies)
         os.utime(self.cookies, (time.time(), time.time()))
         summary = self.doctor._auth_summary(
-            {"valid": True, "outcome": "verified", "checked_at": checked}, {"tripped": False}
+            {"valid": True, "outcome": "verified", "checked_at": checked,
+             "cookie_version": checked_version}, {"tripped": False}
         )
         self.assertEqual(summary["state"], "changed")
         self.assertIsNone(summary["valid"])
@@ -122,7 +127,8 @@ class AuthSummaryStateTest(OfflineCase):
         checked = time.time() - 5
         os.utime(self.cookies, (checked - 10, checked - 10))
         summary = self.doctor._auth_summary(
-            {"valid": True, "outcome": "verified", "checked_at": checked},
+            {"valid": True, "outcome": "verified", "checked_at": checked,
+             "cookie_version": file_version(self.cookies)},
             {"tripped": True, "remaining_seconds": 60},
         )
         self.assertEqual(summary["state"], "risk_control")
@@ -137,5 +143,6 @@ class AuthSummaryStateTest(OfflineCase):
             {"valid": False, "checked_at": checked, "error_type": "RiskControlError"},
             {"tripped": False},
         )
-        self.assertEqual(summary["state"], "risk_control")
+        self.assertEqual(summary["state"], "stale")
+        self.assertEqual(summary["last_check"]["error_type"], "RiskControlError")
         self.assertIsNone(summary["valid"])

@@ -15,7 +15,9 @@ from typing import Any
 import requests
 from loguru import logger
 
-from goofish_z.core.errors import AuthRequiredError, RiskControlError, SessionChangedError
+from goofish_z.core.errors import (
+    AuthRequiredError, RateLimitedError, RiskControlError, SessionChangedError,
+)
 from goofish_z.core.paths import runtime_data_path
 from goofish_z.core.sign import generate_device_id, generate_sign
 from goofish_z.core.state_file import file_version, state_lock, write_state
@@ -107,6 +109,9 @@ class Session:
         """刷新登录态（移植 XianYuApis）。成功返回 True，并持久化新 cookie。"""
         from goofish_z.core.guard import check as guard_check
         from goofish_z.core.guard import looks_like_risk, trip
+        from goofish_z.core.mtop import (
+            _raise_for_http_rate_limit, _raise_for_traffic_limit, _retry_after_seconds,
+        )
 
         guard_check()
         from goofish_z.core.refresh import is_enabled
@@ -142,6 +147,7 @@ class Session:
                 data={"data": data_val},
                 timeout=15,
             )
+            _raise_for_http_rate_limit(resp, api)
             for c in resp.cookies:
                 # 先删除同名旧 cookie（requests 对同 domain/path 重复 name 会报错）
                 for existing in list(self.http.cookies):
@@ -156,6 +162,10 @@ class Session:
                 # 账号受限期间继续打请求。命中即熔断，并按风控上抛终止整条链路。
                 trip(f"refresh_token 触发风控：{ret[:120]}", api=api)
                 raise RiskControlError(f"[{api}] 刷新登录态时触发风控：{ret}", raw=payload_dict)
+            _raise_for_traffic_limit(
+                ret, api, payload_dict,
+                retry_after=_retry_after_seconds(resp.headers.get("Retry-After")),
+            )
             ok = "SUCCESS" in ret.upper() or "成功" in ret
             if ok:
                 from goofish_z.core.browser_cookie import _jars_to_entries
@@ -173,8 +183,8 @@ class Session:
                     logger.warning(f"登录态持久化失败: {type(e).__name__}")
                     return False
             return ok
-        except (RiskControlError, SessionChangedError):
-            # 风控/会话替换必须穿透：被下面的宽 except 吞掉就等于没有熔断。
+        except (RiskControlError, RateLimitedError, SessionChangedError):
+            # 风控、限流和会话替换必须穿透，不能继续浏览器恢复或再次请求。
             raise
         except Exception as e:  # noqa: BLE001
             logger.warning(f"refresh_token 异常: {e}")

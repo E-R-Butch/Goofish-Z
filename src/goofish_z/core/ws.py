@@ -24,6 +24,7 @@ import websockets
 from loguru import logger
 from websockets.asyncio.client import ClientConnection
 
+from goofish_z.core.errors import SessionChangedError
 from goofish_z.core.session import Session
 from goofish_z.core.sign import decrypt, generate_mid, generate_uuid
 from goofish_z.core.token import IM_APP_KEY, get_access_token
@@ -578,6 +579,8 @@ async def run_forever(
 
     外层套重连循环：服务端会不定时关连接（观察约每 10~30 分钟一次），
     捕获 ConnectionClosed 后指数退避重连 + 重新 reg。
+    登录态被其他命令更新时，停止所有循环并向调用方抛出 SessionChangedError；
+    不重试旧会话，也不自动切换到磁盘上的其他账号。调用方需重新启动监听。
     """
     from goofish_z.core.token import refresh_login
 
@@ -587,6 +590,8 @@ async def run_forever(
             try:
                 refresh_login(session)
                 logger.debug("login refreshed")
+            except SessionChangedError:
+                raise
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"login refresh failed: {e}")
 
@@ -606,14 +611,16 @@ async def run_forever(
                     if handler is not None:
                         try:
                             await handler(msg, ws)
+                        except SessionChangedError:
+                            raise
                         except Exception as e:  # noqa: BLE001
                             logger.exception(f"handler error: {e}")
             finally:
                 hb.cancel()
+                await asyncio.gather(hb, return_exceptions=True)
 
-    ka = asyncio.create_task(_keepalive())
-    backoff = 1.0
-    try:
+    async def _reconnect() -> None:
+        backoff = 1.0
         while True:
             try:
                 logger.info("WS 连接中…")
@@ -627,9 +634,25 @@ async def run_forever(
                 backoff = min(backoff * 2, 30.0)
             except asyncio.CancelledError:
                 raise
+            except SessionChangedError:
+                raise
             except Exception as e:  # noqa: BLE001
                 logger.exception(f"WS 会话异常：{e}；{backoff:.1f}s 后重连")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
+
+    ka = asyncio.create_task(_keepalive())
+    connection = asyncio.create_task(_reconnect())
+    try:
+        # Either loop can discover a replaced session. Propagate its error and
+        # stop the peer even while it is blocked receiving or backing off.
+        # wait() leaves cancellation to the finally block, avoiding a second
+        # cancellation interrupting the connection's asynchronous cleanup.
+        done, _ = await asyncio.wait((ka, connection), return_when=asyncio.FIRST_COMPLETED)
+        for task in (ka, connection):
+            if task in done:
+                task.result()
     finally:
         ka.cancel()
+        connection.cancel()
+        await asyncio.gather(ka, connection, return_exceptions=True)
