@@ -69,7 +69,7 @@ async def _try_quick_enter(page: Any) -> bool:
         logger.info("[refresh] 点击 passport '快速进入' 免密登录")
         await page.wait_for_selector("#alibaba-login-box", state="hidden", timeout=10000)
         return True
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning(f"[refresh] '快速进入'不可用（浏览器免密记忆可能已失效）：{e}")
         return False
 
@@ -96,7 +96,7 @@ async def _refresh_async(cookies: dict[str, str]) -> list[dict[str, Any]]:
         try:
             await page.goto(AUTH_PROBE_URL, wait_until="domcontentloaded", timeout=15000)
             await page.wait_for_timeout(1500)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug(f"[refresh] goto {AUTH_PROBE_URL} 异常（忽略）：{e}")
 
         pw_cookies = await page.context.cookies()
@@ -122,7 +122,7 @@ def refresh_cookies_via_browser(session: Session, *, persist: bool = True) -> bo
     try:
         entries = asyncio.run(_refresh_async(current))
         fresh = goofish_cookie_values(entries)
-    except Exception as e:  # noqa: BLE001 — Playwright 起不来、Chrome 未装、超时等都走这里
+    except Exception as e:
         logger.warning(f"用 Playwright 刷 cookie 失败：{e}")
         return False
 

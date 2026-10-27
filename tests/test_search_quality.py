@@ -1,8 +1,8 @@
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
-
 from support import OfflineCase, fixture
+
 from goofish_z.blacklist import capacity_matches, extract_gpu_models, is_buying_post
 from goofish_z.commands.search.search import filter_search_items
 

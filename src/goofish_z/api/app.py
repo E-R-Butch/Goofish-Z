@@ -15,11 +15,19 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
-from goofish_z.core.registry import discover, iter_commands
 from goofish_z import __version__
-from goofish_z.core.errors import AuthRequiredError, GoofishError, NotFoundError, RateLimitedError, RiskControlError, UpstreamError
-from goofish_z.api.models import RuleAdd, RuleRemove, SellerUnban, WatchAdd, WatchRun
 from goofish_z.api.jobs import JobBusyError, WatchJobs
+from goofish_z.api.models import RuleAdd, RuleRemove, SellerUnban, WatchAdd, WatchRun
+from goofish_z.core.errors import (
+    AuthRequiredError,
+    GoofishError,
+    NotFoundError,
+    RateLimitedError,
+    RiskControlError,
+    UpstreamError,
+)
+from goofish_z.core.registry import discover, iter_commands
+
 
 @asynccontextmanager
 async def lifespan(app):
@@ -60,7 +68,7 @@ def _call_command(full_name: str, params: dict[str, Any]) -> Any:
             429,
             "请求过于频繁，请稍后重试",
             headers={"Retry-After": str(retry_after)},
-        )
+        ) from e
     except AuthRequiredError as e:
         raise HTTPException(401, str(e)) from e
     except RiskControlError as e:
@@ -72,7 +80,7 @@ def _call_command(full_name: str, params: dict[str, Any]) -> Any:
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
     except GoofishError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     except Exception as e:
         logger.exception(f"命令 {full_name} 失败")
         raise HTTPException(500, "命令执行失败，请查看服务日志") from e

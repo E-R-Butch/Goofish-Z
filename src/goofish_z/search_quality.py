@@ -5,7 +5,10 @@ import re
 from typing import Any
 
 from .blacklist import (
-    extract_capacities, extract_gpu_models, is_system_unit, normalize_search_text,
+    extract_capacities,
+    extract_gpu_models,
+    is_system_unit,
+    normalize_search_text,
 )
 
 # Ignore a bundled extra or a denial before classifying the offered product.

@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import HTTPException
 from mcp.server.mcpserver.exceptions import ToolError
+from support import OfflineCase
 from typer.testing import CliRunner
 
-from support import OfflineCase
 from goofish_z.core.errors import AuthRequiredError, RiskControlError
 from goofish_z.mcp_server import make_handler
 

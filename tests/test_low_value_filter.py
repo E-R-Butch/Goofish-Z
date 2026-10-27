@@ -1,4 +1,5 @@
 import unittest
+
 from goofish_z.low_value_filter import LowValueClassifier
 
 
@@ -90,8 +91,9 @@ class TestLowValueClassifier(unittest.TestCase):
         self.assertFalse(res.is_low_value)
 
     def test_jev_arbiter_low_vmi_and_fallback(self):
-        from goofish_z.llm_arbiter import LLMArbiter
         from unittest.mock import patch
+
+        from goofish_z.llm_arbiter import LLMArbiter
 
         arbiter = LLMArbiter(api_key="mock_key", base_url="http://mock-llm.invalid/v1")
 
@@ -120,8 +122,9 @@ class TestLowValueClassifier(unittest.TestCase):
         self.assertFalse(assessment.is_blocked)
 
     def test_jev_honors_explicit_service_and_parts_query(self):
-        from goofish_z.llm_arbiter import LLMArbiter
         from unittest.mock import patch
+
+        from goofish_z.llm_arbiter import LLMArbiter
 
         arbiter = LLMArbiter(api_key="mock_key", base_url="http://mock-llm.invalid/v1")
         # 用户显式搜索“4090租赁”，返回 t=2 时不应拦截
@@ -279,6 +282,7 @@ class TestPriceValueEngineReview(unittest.TestCase):
 
     def test_llm_escalation_only_for_gpu_queries(self):
         from unittest.mock import Mock
+
         from goofish_z.price_value_engine import PriceValueEngine
         engine = PriceValueEngine(enable_llm=True)
         fake = Mock()

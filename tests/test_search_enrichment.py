@@ -1,16 +1,21 @@
 """Offline entry-path regressions for bounded, best-effort SKU enrichment."""
 import asyncio
 import importlib
-import json
 import inspect
+import json
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
+from support import OfflineCase, fixture
 from typer.testing import CliRunner
 
-from support import OfflineCase, fixture
-from goofish_z.core.errors import AuthRequiredError, BlockedError, RateLimitedError, RiskControlError
+from goofish_z.core.errors import (
+    AuthRequiredError,
+    BlockedError,
+    RateLimitedError,
+    RiskControlError,
+)
 from goofish_z.mcp_server import make_handler
 
 SKUS = [{"sku_id": "synthetic-sku", "name": "synthetic option", "price": 1000, "quantity": 1}]

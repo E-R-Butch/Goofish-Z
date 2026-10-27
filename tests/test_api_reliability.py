@@ -5,8 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-
 from support import OfflineCase, fixture
+
 from goofish_z.core.errors import GoofishError
 from goofish_z.db import WatchDB
 

@@ -99,6 +99,7 @@ async def observe_sorted_action(page: Any, action: Any, query: str, sort: str, n
 
 async def select_native_sort(page: Any, query: str, sort: str, wait_slot: Any) -> list[str]:
     from playwright.async_api import TimeoutError as BrowserTimeout
+
     from .guard import check as guard_check
     guard_check()
     try:

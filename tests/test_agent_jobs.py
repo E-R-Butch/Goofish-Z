@@ -2,9 +2,14 @@ import asyncio
 from unittest.mock import Mock, patch
 
 import requests
-
 from support import OfflineCase
-from goofish_z.commands.watch.jobs import watch_cancel, watch_job, watch_jobs, watch_start
+
+from goofish_z.commands.watch.jobs import (
+    watch_cancel,
+    watch_job,
+    watch_jobs,
+    watch_start,
+)
 from goofish_z.core.errors import GoofishError
 from goofish_z.mcp_server import make_handler
 

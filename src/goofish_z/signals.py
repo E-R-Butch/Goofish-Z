@@ -193,8 +193,8 @@ def detect_signals(item: dict[str, Any], median_unit_price: float | None,
 
     # 低价引流：每GB单价显著低于同类中位（容量归一化，16G ¥150 vs 32G ¥200
     # 裸价不可比，¥9.4/GB vs ¥6.25/GB 才能看出谁便宜）
-    from goofish_z.core.price import price_value
     from goofish_z.blacklist import _extract_capacity
+    from goofish_z.core.price import price_value
     price = price_value(item.get("price"))
     if price is not None:
         capacity = _extract_capacity(title)

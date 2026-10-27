@@ -45,7 +45,7 @@ def _wrap(cmd: Command):
         except GoofishError as e:
             typer.secho(f"[{type(e).__name__}] {e}", fg=typer.colors.RED, err=True)
             raise typer.Exit(code=e.exit_code) from e
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             typer.secho(f"[Error] {e}", fg=typer.colors.RED, err=True)
             logger.exception(e)
             raise typer.Exit(code=1) from e
@@ -105,7 +105,7 @@ def doctor_cmd(format: str = Format.JSON.value):
 
 
 @app.command(name="list-commands")
-def list_commands(format: str = Format.TABLE.value):  # noqa: A002
+def list_commands(format: str = Format.TABLE.value):
     """列出所有已注册命令（调试用）。"""
     discover()
     rows = [

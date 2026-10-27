@@ -272,9 +272,7 @@ class LLMArbiter:
 
                 # --- 本地 Python 纳秒级完成数学运算与文案组装 ---
                 is_blocked, block_reason = BLOCK_TYPE_MAP[b_type]
-                if b_type == 1 and wants_parts(query):
-                    is_blocked = False
-                elif b_type == 2 and wants_service(query):
+                if b_type == 1 and wants_parts(query) or b_type == 2 and wants_service(query):
                     is_blocked = False
 
                 # 真实价格

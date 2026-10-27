@@ -1,9 +1,14 @@
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
-
 from support import OfflineCase, fixture
-from goofish_z.blacklist import BlacklistDB, _extract_capacity, capacity_matches, extract_gpu_models
+
+from goofish_z.blacklist import (
+    BlacklistDB,
+    _extract_capacity,
+    capacity_matches,
+    extract_gpu_models,
+)
 
 
 class SearchMatchingTest(OfflineCase):

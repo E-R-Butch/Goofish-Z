@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import requests
 from fastapi.testclient import TestClient
-
 from support import OfflineCase
+
 from goofish_z.core import mtop
 from goofish_z.core import session as session_mod
 

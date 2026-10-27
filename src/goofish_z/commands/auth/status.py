@@ -76,7 +76,7 @@ def status() -> dict[str, Any]:
             "valid": True,
             "outcome": "verified",
         }
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         if isinstance(e, (RiskControlError, BlockedError)):
             outcome, valid = "risk_control", None
         elif isinstance(e, RateLimitedError):

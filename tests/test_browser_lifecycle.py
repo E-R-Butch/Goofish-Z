@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from support import OfflineCase
+
 from goofish_z.core import browser as browser_mod
 
 

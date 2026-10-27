@@ -6,13 +6,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlencode
 
 from fastapi.testclient import TestClient
+from support import OfflineCase, fixture
 from typer.testing import CliRunner
 
-from support import OfflineCase, fixture
 from goofish_z.core.errors import AuthRequiredError, GoofishError, RiskControlError
 from goofish_z.core.search_sort import (
-    SORT_OPTIONS, is_search_response, observe_sorted_action, request_metadata,
-    response_item_ids, select_native_sort, verify_sorted_items,
+    SORT_OPTIONS,
+    is_search_response,
+    observe_sorted_action,
+    request_metadata,
+    response_item_ids,
+    select_native_sort,
+    verify_sorted_items,
 )
 
 
@@ -104,6 +109,7 @@ class NativeSortTest(OfflineCase):
 
     def test_http_cli_and_mcp_forward_native_sort_to_shared_search(self):
         import importlib
+
         from goofish_z.cli import app
         from goofish_z.mcp_server import make_handler
         api = importlib.import_module("goofish_z.api.app")

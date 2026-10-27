@@ -115,7 +115,7 @@ async def heartbeat_loop(ws: ClientConnection, interval: float = 15.0) -> None:
     while True:
         try:
             await ws.send(json.dumps({"lwp": "/!", "headers": {"mid": generate_mid()}}))
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug(f"heartbeat send failed: {e}")
             return
         await asyncio.sleep(interval)
@@ -406,7 +406,7 @@ async def list_user_messages(
                             "send_user_name": ext.get("reminderTitle", ""),
                             "message": payload,
                         })
-                    except Exception as e:  # noqa: BLE001
+                    except Exception as e:
                         logger.debug(f"parse history item failed: {e}")
 
                 has_more = body.get("hasMore") == 1
@@ -432,11 +432,11 @@ def _decode_one(raw: str) -> dict[str, Any] | None:
         pass
     try:
         return json.loads(base64.b64decode(raw))
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     try:
         return json.loads(decrypt(raw))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.debug(f"decrypt push failed: {e}")
         return None
 
@@ -496,7 +496,7 @@ def extract_incoming_text(decoded: dict[str, Any]) -> dict[str, Any] | None:
                 try:
                     payload = json.loads(base64.b64decode(data_b64))
                     text = (payload.get("text") or {}).get("text", "")
-                except Exception:  # noqa: BLE001
+                except Exception:
                     text = ""
             text = text or reminder.get("reminderContent", "")
         else:
@@ -592,7 +592,7 @@ async def run_forever(
                 logger.debug("login refreshed")
             except SessionChangedError:
                 raise
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 logger.warning(f"login refresh failed: {e}")
 
     async def _one_session() -> None:
@@ -613,7 +613,7 @@ async def run_forever(
                             await handler(msg, ws)
                         except SessionChangedError:
                             raise
-                        except Exception as e:  # noqa: BLE001
+                        except Exception as e:
                             logger.exception(f"handler error: {e}")
             finally:
                 hb.cancel()
@@ -636,7 +636,7 @@ async def run_forever(
                 raise
             except SessionChangedError:
                 raise
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 logger.exception(f"WS 会话异常：{e}；{backoff:.1f}s 后重连")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)

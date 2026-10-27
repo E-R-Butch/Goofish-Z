@@ -16,7 +16,10 @@ import requests
 from loguru import logger
 
 from goofish_z.core.errors import (
-    AuthRequiredError, RateLimitedError, RiskControlError, SessionChangedError,
+    AuthRequiredError,
+    RateLimitedError,
+    RiskControlError,
+    SessionChangedError,
 )
 from goofish_z.core.paths import runtime_data_path
 from goofish_z.core.sign import generate_device_id, generate_sign
@@ -110,7 +113,9 @@ class Session:
         from goofish_z.core.guard import check as guard_check
         from goofish_z.core.guard import looks_like_risk, trip
         from goofish_z.core.mtop import (
-            _raise_for_http_rate_limit, _raise_for_traffic_limit, _retry_after_seconds,
+            _raise_for_http_rate_limit,
+            _raise_for_traffic_limit,
+            _retry_after_seconds,
         )
 
         guard_check()
@@ -179,14 +184,14 @@ class Session:
                 except SessionChangedError:
                     # Do not fall back to another refresh after an explicit newer login.
                     raise
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
                     logger.warning(f"登录态持久化失败: {type(e).__name__}")
                     return False
             return ok
         except (RiskControlError, RateLimitedError, SessionChangedError):
             # 风控、限流和会话替换必须穿透，不能继续浏览器恢复或再次请求。
             raise
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning(f"refresh_token 异常: {e}")
             return False
 
@@ -256,7 +261,7 @@ def _load_or_bootstrap_cookies(path: Path, *, allow_bootstrap: bool = True) -> d
                 return cookies
     except (AuthRequiredError, SessionChangedError):
         raise
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.debug(f"Chrome cookie 自动抓取失败: {e}")
     raise AuthRequiredError(f"未找到有效 cookie，请先执行 goofish-z auth login（或检查 {path}）")
 

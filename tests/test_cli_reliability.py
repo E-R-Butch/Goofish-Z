@@ -1,9 +1,8 @@
 import json
 from unittest.mock import patch
 
-from typer.testing import CliRunner
-
 from support import OfflineCase
+from typer.testing import CliRunner
 
 
 class CliTest(OfflineCase):

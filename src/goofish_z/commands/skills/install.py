@@ -52,7 +52,7 @@ def _default_dest() -> Path:
 def install(
     dest: str | None = None,
     force: bool = False,
-    list: bool = False,  # noqa: A002
+    list: bool = False,
 ) -> list[dict[str, Any]]:
     root = _bundle_root()
     skill_dirs = sorted(p for p in root.iterdir() if p.is_dir() and (p / "SKILL.md").is_file())
