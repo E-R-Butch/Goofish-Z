@@ -21,7 +21,7 @@ from loguru import logger
 
 from goofish_z.core import Strategy, command
 from goofish_z.core.browser import (
-    WARM_REUSE, auto_scroll, recycle_warm_browser, run_in_browser, warm_page,
+    WARM_REUSE, auto_scroll, run_in_browser, warm_page,
 )
 from goofish_z.core.errors import (
     AuthRequiredError, BlockedError, GoofishError, RateLimitedError, RiskControlError,
@@ -279,18 +279,8 @@ async def _go_to_page(page: Any, number: int, query: str = "", sort: str = "defa
 
 
 async def _run(query: str, limit: int, page_number: int = 1, sort: str = "default") -> dict[str, Any]:
-    """外层包装：风控/登录态异常时丢弃常驻浏览器，避免在污染状态里继续搜。"""
-    try:
-        return await _run_inner(query, limit, page_number, sort)
-    except AuthRequiredError:
-        await recycle_warm_browser("搜索登录态失效")
-        raise
-    except Exception as error:  # noqa: BLE001
-        from goofish_z.core.errors import RiskControlError
-
-        if isinstance(error, RiskControlError):
-            await recycle_warm_browser("搜索页触发风控")
-        raise
+    # Pool cleanup belongs to warm_page on the browser's owning event loop.
+    return await _run_inner(query, limit, page_number, sort)
 
 
 async def _browser_stage(url: str, limit: int, sort: str, page_number: int,

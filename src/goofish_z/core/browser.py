@@ -268,6 +268,7 @@ class _WarmPool:
         self._uses = 0
         self._born = 0.0
         self.recycles = 0
+        self._cookie_snapshot: list[dict[str, Any]] | None = None
 
     @property
     def alive(self) -> bool:
@@ -278,9 +279,10 @@ class _WarmPool:
 
         PROFILES_PARENT.mkdir(parents=True, exist_ok=True)
         profile_dir = Path(tempfile.mkdtemp(prefix="chrome-warm-", dir=str(PROFILES_PARENT)))
-        pw = await async_playwright().start()
+        self._profile_dir = profile_dir
         try:
-            ctx = await pw.chromium.launch_persistent_context(
+            self._pw = await async_playwright().start()
+            self._ctx = await self._pw.chromium.launch_persistent_context(
                 user_data_dir=str(profile_dir),
                 channel="chrome",
                 headless=os.environ.get("GOOFISH_HEADLESS") == "1",
@@ -289,45 +291,63 @@ class _WarmPool:
                 timezone_id="Asia/Shanghai",
                 args=_WARM_ARGS,
             )
-        except Exception:
-            await pw.stop()
-            shutil.rmtree(profile_dir, ignore_errors=True)
+            await self._ctx.add_init_script(_FINGERPRINT_JS)
+            self._uses = 0
+            self._born = time.monotonic()
+            await self._refresh_cookies()
+        except BaseException:
+            # Includes task cancellation; partial startup must not orphan Chrome.
+            await self.recycle("启动未完成")
             raise
-        await ctx.add_init_script(_FINGERPRINT_JS)
-        self._pw, self._ctx, self._profile_dir = pw, ctx, profile_dir
-        self._uses = 0
-        self._born = time.monotonic()
-        await self._refresh_cookies()
         logger.info("常驻浏览器已启动 profile={} args={}", profile_dir.name, len(_WARM_ARGS))
 
     async def _refresh_cookies(self) -> None:
         from goofish_z.core.errors import AuthRequiredError
 
         cookies = _cookies_to_playwright(_load_cookies_from_session())
+        if self._cookie_snapshot is not None and cookies != self._cookie_snapshot:
+            # A changed session must not inherit another account's cookies or web storage.
+            await self.recycle("登录态变更")
+            await self._start()
+            return
         try:
+            await self._ctx.clear_cookies()
             await self._ctx.add_cookies(cookies)
         except Exception as exc:  # noqa: BLE001
             raise AuthRequiredError("浏览器登录态注入失败，请重新导入 Chrome 登录态") from exc
+        self._cookie_snapshot = cookies
 
     async def recycle(self, reason: str = "") -> None:
         ctx, pw, profile_dir = self._ctx, self._pw, self._profile_dir
         self._ctx = self._pw = self._profile_dir = None
         self._uses = 0
+        self._cookie_snapshot = None
         self.recycles += 1
         if reason:
             logger.info("常驻浏览器回收：{}", reason)
-        if ctx is not None:
+        async def cleanup() -> None:
             try:
-                await ctx.close()
-            except Exception:  # noqa: BLE001
-                pass
-        if pw is not None:
-            try:
-                await pw.stop()
-            except Exception:  # noqa: BLE001
-                pass
-        if profile_dir is not None:
-            shutil.rmtree(profile_dir, ignore_errors=True)
+                if ctx is not None:
+                    try:
+                        await ctx.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                if pw is not None:
+                    try:
+                        await pw.stop()
+                    except Exception:  # noqa: BLE001
+                        pass
+            finally:
+                if profile_dir is not None:
+                    shutil.rmtree(profile_dir, ignore_errors=True)
+
+        cleanup_task = asyncio.create_task(cleanup())
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            # Do not release the caller's pool lock until detached resources are gone.
+            await cleanup_task
+            raise
 
     async def _ensure(self) -> None:
         if self._ctx is not None:
@@ -345,26 +365,27 @@ class _WarmPool:
     @asynccontextmanager
     async def page(self) -> AsyncIterator[Any]:
         async with self._lock:
-            await self._ensure()
-            self._uses += 1
+            from goofish_z.core.guard import check as guard_check
+
+            guard_check()
+            page = None
             try:
-                page = await self._ctx.new_page()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("常驻浏览器 new_page 失败（{}），重建", type(exc).__name__)
-                await self.recycle("new_page 失败")
-                await self._start()
-                page = await self._ctx.new_page()
-            try:
+                await self._ensure()
+                self._uses += 1
+                try:
+                    page = await self._ctx.new_page()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("常驻浏览器 new_page 失败（{}），重建", type(exc).__name__)
+                    await self.recycle("new_page 失败")
+                    await self._start()
+                    page = await self._ctx.new_page()
                 yield page
-            finally:
-                try:
-                    await page.goto("about:blank", timeout=5000)
-                except Exception:  # noqa: BLE001
-                    pass
-                try:
-                    await page.close()
-                except Exception:  # noqa: BLE001
-                    pass
+                await page.close()
+            except BaseException:
+                # On the owning event loop and while holding the pool lock. A queued
+                # request cancelled before acquisition never reaches this cleanup.
+                await self.recycle("浏览器请求未完成")
+                raise
 
 
 _POOL: _WarmPool | None = None
@@ -390,8 +411,10 @@ async def warm_page() -> AsyncIterator[Any]:
 
 async def recycle_warm_browser(reason: str = "") -> None:
     """风控/登录态异常时由调用方主动丢弃常驻浏览器。"""
-    if _POOL is not None and _POOL.alive:
-        await _POOL.recycle(reason)
+    pool = _POOL
+    if pool is not None:
+        async with pool._lock:
+            await pool.recycle(reason)
 
 
 # ── 浏览器专属线程 ────────────────────────────────────────────────────────────
@@ -405,6 +428,7 @@ class _BrowserWorker:
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ready = threading.Event()
+        self._start_lock = threading.Lock()
 
     def _run_forever(self) -> None:
         loop = asyncio.new_event_loop()
@@ -420,13 +444,15 @@ class _BrowserWorker:
                 pass
 
     def ensure_started(self) -> asyncio.AbstractEventLoop:
-        if self._thread is None or not self._thread.is_alive():
-            self._ready.clear()
-            self._thread = threading.Thread(target=self._run_forever, name="goofish-browser", daemon=True)
-            self._thread.start()
+        with self._start_lock:
+            if self._thread is None or not self._thread.is_alive():
+                self._ready.clear()
+                self._loop = None
+                self._thread = threading.Thread(target=self._run_forever, name="goofish-browser", daemon=True)
+                self._thread.start()
             if not self._ready.wait(15) or self._loop is None:
                 raise RuntimeError("浏览器线程启动失败")
-        return self._loop
+            return self._loop
 
     def stop(self) -> None:
         loop = self._loop
@@ -439,13 +465,16 @@ class _BrowserWorker:
 
 
 _WORKER: _BrowserWorker | None = None
+_WORKER_LOCK = threading.Lock()
+_BROWSER_REQUESTS: set[asyncio.Task[Any]] = set()
 
 
 def browser_worker() -> _BrowserWorker:
     global _WORKER
-    if _WORKER is None:
-        _WORKER = _BrowserWorker()
-    return _WORKER
+    with _WORKER_LOCK:
+        if _WORKER is None:
+            _WORKER = _BrowserWorker()
+        return _WORKER
 
 
 async def run_in_browser(factory: Any, *args: Any, timeout: float = 240.0) -> Any:
@@ -456,13 +485,30 @@ async def run_in_browser(factory: Any, *args: Any, timeout: float = 240.0) -> An
     from goofish_z.core.errors import GoofishError
 
     loop = browser_worker().ensure_started()
-    fut = asyncio.run_coroutine_threadsafe(factory(*args), loop)
+    async def execute() -> Any:
+        task = asyncio.current_task()
+        _BROWSER_REQUESTS.add(task)
+        try:
+            return await factory(*args)
+        finally:
+            _BROWSER_REQUESTS.discard(task)
+
+    fut = asyncio.run_coroutine_threadsafe(execute(), loop)
     try:
         return await asyncio.wait_for(asyncio.wrap_future(fut), timeout)
     except asyncio.TimeoutError as error:
         fut.cancel()
-        asyncio.run_coroutine_threadsafe(recycle_warm_browser("浏览器阶段超时"), loop)
         raise GoofishError("搜索页操作超时，本次搜索未完成，请重试") from error
+
+
+async def _drain_browser_worker() -> None:
+    """Cancel active/queued requests before closing their shared browser on its loop."""
+    tasks = list(_BROWSER_REQUESTS)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    await recycle_warm_browser("进程退出")
 
 
 @atexit.register
@@ -471,7 +517,7 @@ def _shutdown_browser_worker() -> None:  # pragma: no cover - 退出路径
     if worker is None or worker._loop is None:
         return
     try:
-        asyncio.run_coroutine_threadsafe(recycle_warm_browser("进程退出"), worker._loop).result(5)
+        asyncio.run_coroutine_threadsafe(_drain_browser_worker(), worker._loop).result(10)
     except Exception:  # noqa: BLE001
         pass
     worker.stop()
