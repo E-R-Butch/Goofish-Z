@@ -205,6 +205,12 @@ class LLMArbiter:
             or os.environ.get("GOOFISH_LLM_MODEL")
             or "antigravity-gemini-3.8-flash"
         )
+        # 单次调用超时：必须落在传输层（urllib timeout），外层 asyncio 超时
+        # 取消不掉同步阻塞的请求。lite 实测 0.8~3.6s，默认留到 5s。
+        try:
+            self.timeout = float(os.environ.get("GOOFISH_LLM_TIMEOUT_SECONDS", "5"))
+        except ValueError:
+            self.timeout = 5.0
 
     @property
     def configured(self) -> bool:
@@ -249,7 +255,7 @@ class LLMArbiter:
                     "Content-Type": "application/json",
                 },
             )
-            with urllib.request.urlopen(req, timeout=25) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
                 choice = result.get("choices", [{}])[0]
                 content = choice.get("message", {}).get("content") or ""
