@@ -21,9 +21,11 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import os
 import shutil
 import tempfile
+import threading
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -389,3 +391,86 @@ async def recycle_warm_browser(reason: str = "") -> None:
     """风控/登录态异常时由调用方主动丢弃常驻浏览器。"""
     if _POOL is not None and _POOL.alive:
         await _POOL.recycle(reason)
+
+
+# ── 浏览器专属线程 ────────────────────────────────────────────────────────────
+# 为什么需要：FastAPI 的 /api/search 是同步端点，跑在线程池里，命令层每条请求
+# 内部 asyncio.run() 一个新事件循环。Playwright 对象有 loop 亲和性，把常驻 Chrome
+# 挂在这种短命 loop 上 → 第二次请求报 "attached to a different loop"，Chrome 还会
+# 变成孤儿进程。所以常驻 Chrome 独占一个后台线程 + 长驻 loop，跨线程只传普通 dict。
+
+class _BrowserWorker:
+    def __init__(self) -> None:
+        self._thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._ready = threading.Event()
+
+    def _run_forever(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self._ready.set()
+        try:
+            loop.run_forever()
+        finally:
+            try:
+                loop.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def ensure_started(self) -> asyncio.AbstractEventLoop:
+        if self._thread is None or not self._thread.is_alive():
+            self._ready.clear()
+            self._thread = threading.Thread(target=self._run_forever, name="goofish-browser", daemon=True)
+            self._thread.start()
+            if not self._ready.wait(15) or self._loop is None:
+                raise RuntimeError("浏览器线程启动失败")
+        return self._loop
+
+    def stop(self) -> None:
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(loop.stop)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+_WORKER: _BrowserWorker | None = None
+
+
+def browser_worker() -> _BrowserWorker:
+    global _WORKER
+    if _WORKER is None:
+        _WORKER = _BrowserWorker()
+    return _WORKER
+
+
+async def run_in_browser(factory: Any, *args: Any, timeout: float = 240.0) -> Any:
+    """在浏览器线程的 loop 里执行 `factory(*args)` 协程，返回值/异常跨线程带回。
+
+    只允许传可跨线程的普通对象（dict / str / int）；Page 对象绝不能交出去。
+    """
+    from goofish_z.core.errors import GoofishError
+
+    loop = browser_worker().ensure_started()
+    fut = asyncio.run_coroutine_threadsafe(factory(*args), loop)
+    try:
+        return await asyncio.wait_for(asyncio.wrap_future(fut), timeout)
+    except asyncio.TimeoutError as error:
+        fut.cancel()
+        asyncio.run_coroutine_threadsafe(recycle_warm_browser("浏览器阶段超时"), loop)
+        raise GoofishError("搜索页操作超时，本次搜索未完成，请重试") from error
+
+
+@atexit.register
+def _shutdown_browser_worker() -> None:  # pragma: no cover - 退出路径
+    worker = _WORKER
+    if worker is None or worker._loop is None:
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(recycle_warm_browser("进程退出"), worker._loop).result(5)
+    except Exception:  # noqa: BLE001
+        pass
+    worker.stop()

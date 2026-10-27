@@ -21,6 +21,9 @@ class OfflineCase(unittest.TestCase):
         self.use(patch.object(guard, "STATE_PATH", self.root / "circuit.json"))
         self.use(patch.object(limiter, "STATE_PATH", self.root / "limiter.json"))
         self.use(patch.object(self.watch, "DEFAULT_DB", self.root / "watch.db"))
+        # 单测永不启动真浏览器：把常驻池关掉，_browser_stage 在调用方 loop 里跑
+        from goofish_z.core import browser as browser_module
+        self.use(patch.object(browser_module, "WARM_REUSE", False))
         for name in ("blacklist.blacklist", "signals.signals"):
             module = importlib.import_module("goofish_z.commands." + name)
             self.use(patch.object(module, "DEFAULT_DB", self.root / "watch.db"))
