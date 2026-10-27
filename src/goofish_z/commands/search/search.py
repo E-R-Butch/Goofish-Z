@@ -20,7 +20,9 @@ from typing import Any
 from loguru import logger
 
 from goofish_z.core import Strategy, command
-from goofish_z.core.browser import auto_scroll, recycle_warm_browser, warm_page
+from goofish_z.core.browser import (
+    WARM_REUSE, auto_scroll, recycle_warm_browser, run_in_browser, warm_page,
+)
 from goofish_z.core.errors import (
     AuthRequiredError, BlockedError, GoofishError, RateLimitedError, RiskControlError,
 )
@@ -291,10 +293,11 @@ async def _run(query: str, limit: int, page_number: int = 1, sort: str = "defaul
         raise
 
 
-async def _run_inner(query: str, limit: int, page_number: int = 1, sort: str = "default") -> dict[str, Any]:
+async def _browser_stage(url: str, limit: int, sort: str, page_number: int,
+                         query: str) -> dict[str, Any]:
+    """纯浏览器阶段：只在浏览器线程的 loop 里执行，跨线程只返回普通 dict。"""
     from playwright.async_api import TimeoutError as BrowserTimeout
 
-    url = _build_search_url(query)
     async with warm_page() as page:
         try:
             await page.goto(url, wait_until="domcontentloaded")
@@ -317,6 +320,16 @@ async def _run_inner(query: str, limit: int, page_number: int = 1, sort: str = "
                 verify_sorted_items(payload, ids, sort)
             if payload.get("page") != page_number:
                 raise GoofishError("闲鱼返回的页码不匹配，请重新搜索")
+    return payload
+
+
+async def _run_inner(query: str, limit: int, page_number: int = 1, sort: str = "default") -> dict[str, Any]:
+    url = _build_search_url(query)
+    if WARM_REUSE:
+        # 常驻浏览器独占线程；调用方可能是 FastAPI 线程池里的短命 loop，不能直接持有 Page
+        payload = await run_in_browser(_browser_stage, url, limit, sort, page_number, query)
+    else:
+        payload = await _browser_stage(url, limit, sort, page_number, query)
 
     items = payload.get("items") or []
     return {

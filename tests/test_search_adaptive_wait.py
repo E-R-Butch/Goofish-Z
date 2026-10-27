@@ -82,6 +82,46 @@ class AdaptiveWaitCase(OfflineCase):
         self.assertEqual(scroll.await_count, 0, "请求 50 条时也不该因为只拿到 30 条就滚")
 
 
+class BrowserWorkerCase(OfflineCase):
+    def test_runs_coroutine_on_dedicated_thread(self):
+        import threading as _threading
+
+        async def peek():
+            return _threading.current_thread().name
+
+        name = asyncio.run(browser_mod.run_in_browser(peek, timeout=10))
+        self.assertEqual(name, "goofish-browser")
+        self.assertNotEqual(name, _threading.current_thread().name)
+
+    def test_propagates_exception_and_keeps_thread(self):
+        from goofish_z.core.errors import GoofishError
+
+        async def boom():
+            raise GoofishError("synthetic failure")
+
+        async def peek():
+            import threading as _threading
+            return _threading.current_thread().name
+
+        with self.assertRaises(GoofishError):
+            asyncio.run(browser_mod.run_in_browser(boom, timeout=10))
+        # 线程没被打死，后续调用仍在同一线程
+        self.assertEqual(asyncio.run(browser_mod.run_in_browser(peek, timeout=10)), "goofish-browser")
+
+    def test_serialises_two_calls(self):
+        async def slow(tag):
+            await asyncio.sleep(0.05)
+            return tag
+
+        async def run_both():
+            return await asyncio.gather(
+                browser_mod.run_in_browser(slow, "a", timeout=10),
+                browser_mod.run_in_browser(slow, "b", timeout=10),
+            )
+
+        self.assertEqual(asyncio.run(run_both()), ["a", "b"])
+
+
 class _FakePool(_WarmPool):
     """替换掉真实 Chrome 的部分，只验寿命/回收契约。"""
 
