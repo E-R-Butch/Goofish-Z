@@ -87,7 +87,7 @@ class NativeSortTest(OfflineCase):
         page = MagicMock(); page.goto = AsyncMock()
         @asynccontextmanager
         async def browser(): yield page
-        with patch.object(self.search, "goofish_page", browser), \
+        with patch.object(self.search, "warm_page", browser), \
              patch.object(self.search, "_read_search_page", AsyncMock(side_effect=[payload(["900"], "default"), payload(["101", "102"]), payload(["201", "202"], page=2)])), \
              patch.object(self.search, "select_native_sort", AsyncMock(return_value=["101", "102"])) as select, \
              patch.object(self.search, "_go_to_page", AsyncMock(return_value=["201", "202"])) as next_page:

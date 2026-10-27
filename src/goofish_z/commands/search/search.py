@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 import re
 import time
 from typing import Any
@@ -19,7 +20,9 @@ from typing import Any
 from loguru import logger
 
 from goofish_z.core import Strategy, command
-from goofish_z.core.browser import auto_scroll, goofish_page
+from goofish_z.core.browser import (
+    WARM_REUSE, auto_scroll, run_in_browser, warm_page,
+)
 from goofish_z.core.errors import (
     AuthRequiredError, BlockedError, GoofishError, RateLimitedError, RiskControlError,
 )
@@ -32,6 +35,10 @@ MAX_LIMIT = 50
 MAX_PAGE = 50
 MAX_SKU_DETAILS = 3
 MAX_SKU_WAIT_SECONDS = 12.0
+# 站点列表页实际每页 30 条（limit=50 也只回 30）；拿这个数判断"卡片是否已齐"
+PAGE_SIZE = 30
+# 等首张卡片的上限：卡片出现即走，正常 0.3~5s，慢网络封顶 8s
+CARDS_TIMEOUT_MS = int(os.environ.get("GOOFISH_SEARCH_CARDS_TIMEOUT_MS", "8000"))
 
 
 def _normalize_limit(value: Any) -> int:
@@ -272,10 +279,16 @@ async def _go_to_page(page: Any, number: int, query: str = "", sort: str = "defa
 
 
 async def _run(query: str, limit: int, page_number: int = 1, sort: str = "default") -> dict[str, Any]:
+    # Pool cleanup belongs to warm_page on the browser's owning event loop.
+    return await _run_inner(query, limit, page_number, sort)
+
+
+async def _browser_stage(url: str, limit: int, sort: str, page_number: int,
+                         query: str) -> dict[str, Any]:
+    """纯浏览器阶段：只在浏览器线程的 loop 里执行，跨线程只返回普通 dict。"""
     from playwright.async_api import TimeoutError as BrowserTimeout
 
-    url = _build_search_url(query)
-    async with goofish_page() as page:
+    async with warm_page() as page:
         try:
             await page.goto(url, wait_until="domcontentloaded")
         except BrowserTimeout as error:
@@ -297,6 +310,16 @@ async def _run(query: str, limit: int, page_number: int = 1, sort: str = "defaul
                 verify_sorted_items(payload, ids, sort)
             if payload.get("page") != page_number:
                 raise GoofishError("闲鱼返回的页码不匹配，请重新搜索")
+    return payload
+
+
+async def _run_inner(query: str, limit: int, page_number: int = 1, sort: str = "default") -> dict[str, Any]:
+    url = _build_search_url(query)
+    if WARM_REUSE:
+        # 常驻浏览器独占线程；调用方可能是 FastAPI 线程池里的短命 loop，不能直接持有 Page
+        payload = await run_in_browser(_browser_stage, url, limit, sort, page_number, query)
+    else:
+        payload = await _browser_stage(url, limit, sort, page_number, query)
 
     items = payload.get("items") or []
     return {
@@ -313,16 +336,36 @@ async def _run(query: str, limit: int, page_number: int = 1, sort: str = "defaul
     }
 
 
+async def _wait_for_cards(page: Any) -> None:
+    """等结果卡片出现，不做盲等。
+
+    超时不抛：登录墙 / 风控页本来就没有卡片，交给 _check_payload 判定
+    AuthRequired / RiskControl，比拿"卡片没出现"当通用超时更准。
+    """
+    from playwright.async_api import Error as BrowserError
+    from playwright.async_api import TimeoutError as BrowserTimeout
+
+    try:
+        await page.wait_for_selector('a[href*="/item?id="]', timeout=CARDS_TIMEOUT_MS)
+    except (BrowserTimeout, BrowserError) as exc:
+        logger.debug("搜索卡片 {}ms 内未出现（{}），交由 payload 判定", CARDS_TIMEOUT_MS, type(exc).__name__)
+
+
 async def _read_search_page(page: Any, limit: int) -> dict[str, Any]:
     """An authentication redirect can replace the DOM during the first read."""
     from playwright.async_api import Error as BrowserError, TimeoutError as BrowserTimeout
 
+    want = min(limit, PAGE_SIZE)
     for attempt in range(2):
         try:
             await page.wait_for_load_state("domcontentloaded", timeout=15000)
-            await page.wait_for_timeout(2000)
-            await auto_scroll(page, times=2)
-            return await page.evaluate(_EXTRACT_JS, limit)
+            await _wait_for_cards(page)
+            payload = await page.evaluate(_EXTRACT_JS, limit)
+            if len(payload.get("items") or []) < want:
+                # 初始卡片不足才滚一次补懒加载（实测初始通常已 30 条，滚动不新增）
+                await auto_scroll(page, times=1)
+                payload = await page.evaluate(_EXTRACT_JS, limit)
+            return payload
         except BrowserTimeout as error:
             raise GoofishError("闲鱼搜索页加载超时，本次搜索未完成，请重试") from error
         except BrowserError as error:
