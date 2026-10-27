@@ -238,12 +238,13 @@ async def auto_scroll(page: Any, times: int = 2, pause_ms: int = 800) -> None:
 # 其它调用方（登录、扫码、详情、watch）继续走 goofish_page() 的"每次独立 profile"，
 # 不受影响——并发能力保留在那边。
 #
-# 安全阀：每 WARM_MAX_USES 次、TTL 到期、风控/登录态异常、new_page 失败 → 销毁重建。
+# 安全阀：每 WARM_MAX_USES 次、TTL（默认 2h，宿主内存充裕）到期、风控/登录态异常、
+# new_page 失败 → 销毁重建。
 # cookie 每次 acquire 从 Session.load() 热更新，登录态刷新后无需重启服务。
 
 WARM_REUSE = os.environ.get("GOOFISH_BROWSER_REUSE", "1") != "0"
 WARM_MAX_USES = int(os.environ.get("GOOFISH_BROWSER_MAX_USES", "50"))
-WARM_TTL_SECONDS = float(os.environ.get("GOOFISH_BROWSER_TTL_SECONDS", "1800"))
+WARM_TTL_SECONDS = float(os.environ.get("GOOFISH_BROWSER_TTL_SECONDS", "7200"))
 
 _WARM_ARGS = [
     "--disable-blink-features=AutomationControlled",
