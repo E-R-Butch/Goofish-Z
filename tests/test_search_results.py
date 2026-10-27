@@ -68,12 +68,13 @@ class SearchResultsTest(OfflineCase):
     def test_browser_result_normalizes_price_for_all_clients(self):
         page = MagicMock()
         page.goto = page.wait_for_timeout = page.wait_for_load_state = AsyncMock()
+        page.wait_for_selector = AsyncMock()
         page.evaluate = AsyncMock(return_value={"items": [fixture("¥2.42万")],
                                                "source_query": "synthetic", "has_next": True, "page": 1, "source_count": 30})
         @asynccontextmanager
         async def browser():
             yield page
-        with patch.object(self.search, "goofish_page", browser), \
+        with patch.object(self.search, "warm_page", browser), \
              patch.object(self.search, "auto_scroll", AsyncMock()):
             result = asyncio.run(self.search._run("synthetic", 30))
         self.assertEqual(result["items"][0]["price"], "¥24200")
@@ -113,6 +114,7 @@ class SearchResultsTest(OfflineCase):
         from playwright.async_api import Error as BrowserError
         page = MagicMock()
         page.wait_for_load_state = page.wait_for_timeout = AsyncMock()
+        page.wait_for_selector = AsyncMock()
         page.evaluate = AsyncMock(side_effect=BrowserError('Execution context was destroyed'))
         with patch.object(self.search, 'auto_scroll', AsyncMock()), self.assertRaisesRegex(GoofishError, '仍在跳转'):
             asyncio.run(self.search._read_search_page(page, 30))
@@ -123,10 +125,13 @@ class SearchResultsTest(OfflineCase):
         from playwright.async_api import Error as BrowserError
         page = MagicMock()
         page.wait_for_timeout = page.wait_for_load_state = AsyncMock()
-        page.evaluate = AsyncMock(side_effect=[BrowserError("Execution context was destroyed"), {"items": [fixture()]}])
+        page.wait_for_selector = AsyncMock()
+        # 满页 30 条：不触发自适应滚动，保持"只重读一次 DOM"的原契约
+        full = {"items": [fixture(item_id=str(i)) for i in range(30)]}
+        page.evaluate = AsyncMock(side_effect=[BrowserError("Execution context was destroyed"), full])
         with patch.object(self.search, "auto_scroll", AsyncMock()):
             result = asyncio.run(self.search._read_search_page(page, 30))
-        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(len(result["items"]), 30)
         self.assertEqual(page.evaluate.await_count, 2)
         page.goto.assert_not_called()
 
