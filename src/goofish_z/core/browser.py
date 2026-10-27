@@ -34,8 +34,8 @@ from typing import Any
 
 from loguru import logger
 
-from goofish_z.core.session import Session
 from goofish_z.core.paths import runtime_data_path
+from goofish_z.core.session import Session
 
 PROFILES_PARENT = runtime_data_path("profiles")
 
@@ -95,7 +95,7 @@ def _load_cookies_from_session() -> dict[str, str] | list[dict[str, Any]]:
             if isinstance(raw, list) and raw:
                 # 完整字段格式（扫码写入）——保留 domain
                 return raw
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     session = Session.load()
     return {name: value for name, value in session.http.cookies.items() if value}
@@ -194,7 +194,7 @@ async def goofish_page(
             )
             try:
                 await context.add_cookies(pw_cookies)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 from goofish_z.core.errors import AuthRequiredError
                 await context.close()
                 raise AuthRequiredError("浏览器登录态注入失败，请重新导入 Chrome 登录态") from e
@@ -269,6 +269,22 @@ class _WarmPool:
         self._born = 0.0
         self.recycles = 0
         self._cookie_snapshot: list[dict[str, Any]] | None = None
+        # Playwright 对象与 asyncio.Lock 都有 loop 亲和性：显式记住拥有它的 loop，
+        # 而不是依赖 asyncio.Lock 的内部状态（未竞争时可能惰性绑定）。
+        self._owner_loop: asyncio.AbstractEventLoop | None = None
+
+    def _bind_loop(self) -> asyncio.AbstractEventLoop:
+        """在池的第一个入口绑定 loop；此后任何别的 loop 调用都立即报错。"""
+        loop = asyncio.get_running_loop()
+        if self._owner_loop is None:
+            self._owner_loop = loop
+        elif self._owner_loop is not loop:
+            raise RuntimeError(
+                "常驻浏览器池被跨事件循环调用（owned by "
+                f"0x{id(self._owner_loop):x}, now 0x{id(loop):x}）；"
+                "浏览器操作必须经 goofish_z.core.browser.run_in_browser() 进入"
+            )
+        return loop
 
     @property
     def alive(self) -> bool:
@@ -313,7 +329,7 @@ class _WarmPool:
         try:
             await self._ctx.clear_cookies()
             await self._ctx.add_cookies(cookies)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise AuthRequiredError("浏览器登录态注入失败，请重新导入 Chrome 登录态") from exc
         self._cookie_snapshot = cookies
 
@@ -330,12 +346,12 @@ class _WarmPool:
                 if ctx is not None:
                     try:
                         await ctx.close()
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         pass
                 if pw is not None:
                     try:
                         await pw.stop()
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         pass
             finally:
                 if profile_dir is not None:
@@ -364,6 +380,7 @@ class _WarmPool:
 
     @asynccontextmanager
     async def page(self) -> AsyncIterator[Any]:
+        self._bind_loop()
         async with self._lock:
             from goofish_z.core.guard import check as guard_check
 
@@ -374,7 +391,7 @@ class _WarmPool:
                 self._uses += 1
                 try:
                     page = await self._ctx.new_page()
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.warning("常驻浏览器 new_page 失败（{}），重建", type(exc).__name__)
                     await self.recycle("new_page 失败")
                     await self._start()
@@ -413,6 +430,7 @@ async def recycle_warm_browser(reason: str = "") -> None:
     """风控/登录态异常时由调用方主动丢弃常驻浏览器。"""
     pool = _POOL
     if pool is not None:
+        pool._bind_loop()
         async with pool._lock:
             await pool.recycle(reason)
 
@@ -431,16 +449,20 @@ class _BrowserWorker:
         self._start_lock = threading.Lock()
 
     def _run_forever(self) -> None:
+        global _POOL
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self._loop = loop
+        # 上一代 loop 已死：绑定它的池随之作废，否则下一次调用会被 loop 断言拦下。
+        if _POOL is not None and _POOL._owner_loop is not loop:
+            _POOL = None
         self._ready.set()
         try:
             loop.run_forever()
         finally:
             try:
                 loop.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
     def ensure_started(self) -> asyncio.AbstractEventLoop:
@@ -460,7 +482,7 @@ class _BrowserWorker:
             return
         try:
             loop.call_soon_threadsafe(loop.stop)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
 
@@ -484,7 +506,12 @@ async def run_in_browser(factory: Any, *args: Any, timeout: float = 240.0) -> An
     """
     from goofish_z.core.errors import GoofishError
 
-    loop = browser_worker().ensure_started()
+    worker = browser_worker()
+    thread = worker._thread
+    if thread is not None and thread.ident == threading.get_ident():
+        # 在浏览器线程里再等自己 = 必然自锁，直接报错而不是挂到超时。
+        raise RuntimeError("run_in_browser() 不能在浏览器线程内调用（会自锁）")
+    loop = worker.ensure_started()
     async def execute() -> Any:
         task = asyncio.current_task()
         _BROWSER_REQUESTS.add(task)
@@ -518,6 +545,6 @@ def _shutdown_browser_worker() -> None:  # pragma: no cover - 退出路径
         return
     try:
         asyncio.run_coroutine_threadsafe(_drain_browser_worker(), worker._loop).result(10)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     worker.stop()
