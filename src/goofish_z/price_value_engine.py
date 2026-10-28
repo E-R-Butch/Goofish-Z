@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -163,6 +165,39 @@ class PriceValueEngine:
         else:
             self.enable_llm = enable_llm
         self.arbiter = LLMArbiter(model=llm_model) if self.enable_llm else None
+        # 批次预算：引擎实例是每次搜索新建的，所以这些计数器天然属于当前批次，
+        # 不会被并发搜索互相扣额度。最坏耗时 = min(条数上限×单次超时, 总预算)。
+        try:
+            self._llm_max_escalations = int(os.environ.get("GOOFISH_LLM_MAX_ESCALATIONS", "3"))
+        except ValueError:
+            self._llm_max_escalations = 3
+        try:
+            self._llm_budget_seconds = float(os.environ.get("GOOFISH_LLM_BATCH_BUDGET_SECONDS", "10"))
+        except ValueError:
+            self._llm_budget_seconds = 10.0
+        self._llm_max_escalations = max(0, self._llm_max_escalations)
+        if not math.isfinite(self._llm_budget_seconds):
+            self._llm_budget_seconds = 10.0
+        self._llm_budget_seconds = max(0.0, self._llm_budget_seconds)
+        self._llm_escalations = 0
+        self._llm_deadline: float | None = None
+
+    def _llm_slot_available(self) -> bool:
+        """本条还能不能调 L2：条数上限 + 整批时间预算，任一耗尽即回退 L1。"""
+        if self._llm_escalations >= self._llm_max_escalations or self._llm_budget_seconds <= 0:
+            return False
+        now = time.monotonic()
+        if self._llm_deadline is None:
+            self._llm_deadline = now + self._llm_budget_seconds
+        elif now >= self._llm_deadline:
+            logger.info(
+                "L2 仲裁预算 %.0fs 已用完（已用 %s 条），本条回退 L1",
+                self._llm_budget_seconds,
+                self._llm_escalations,
+            )
+            return False
+        self._llm_escalations += 1
+        return True
 
     def assess(
         self,
@@ -277,31 +312,37 @@ class PriceValueEngine:
                 escalate_reason = "涉及深度改装/复杂硬件做工/争议词汇，LLM语义定性与精准做工估值"
 
             if escalate:
-                logger.info(f"触发 JEV 极简仲裁 [{escalate_reason}]: {title[:30]}")
-                verdict = self.arbiter.judge_jev(item=item, query=active_query, baseline_price=base)
-                if verdict is not None:
-                    verdict_is_blocked = verdict.is_blocked
-                    verdict_reasons = list(verdict.reasons)
-                    verdict_tags = list(verdict.tags)
-                    verdict_tags.append("JEV极简仲裁")
-
-                    # 本地确定性致命锁与霸王条款兜底检查 (绝不让带ID锁或恶意霸王条款漏网)
-                    if PAT_ICLOUD_LOCKED.search(clean_lock_text):
-                        verdict_is_blocked = True
-                        verdict_reasons.append("激活锁死/不可用砖头机(带ID锁)")
-                    if PAT_ABUSIVE_TERMS.search(text):
-                        verdict_is_blocked = True
-                        verdict_reasons.append("高危扣款霸王条款")
-
-                    return ValueAssessment(
-                        effective_price=verdict.effective_price,
-                        fair_value=verdict.fair_market_value,
-                        vmi=verdict.vmi,
-                        tier="BLOCKED_SPECIAL" if verdict_is_blocked else verdict.tier,
-                        is_blocked=verdict_is_blocked,
-                        reasons=verdict_reasons,
-                        tags=verdict_tags,
+                if not self._llm_slot_available():
+                    escalate = False
+                else:
+                    logger.info(f"触发 JEV 极简仲裁 [{escalate_reason}]: {title[:30]}")
+                    verdict = self.arbiter.judge_jev(
+                        item=item, query=active_query, baseline_price=base,
+                        deadline=self._llm_deadline,
                     )
+                    if verdict is not None and time.monotonic() < self._llm_deadline:
+                        verdict_is_blocked = verdict.is_blocked
+                        verdict_reasons = list(verdict.reasons)
+                        verdict_tags = list(verdict.tags)
+                        verdict_tags.append("JEV极简仲裁")
+
+                        # 本地确定性致命锁与霸王条款兜底检查 (绝不让带ID锁或恶意霸王条款漏网)
+                        if PAT_ICLOUD_LOCKED.search(clean_lock_text):
+                            verdict_is_blocked = True
+                            verdict_reasons.append("激活锁死/不可用砖头机(带ID锁)")
+                        if PAT_ABUSIVE_TERMS.search(text):
+                            verdict_is_blocked = True
+                            verdict_reasons.append("高危扣款霸王条款")
+
+                        return ValueAssessment(
+                            effective_price=verdict.effective_price,
+                            fair_value=verdict.fair_market_value,
+                            vmi=verdict.vmi,
+                            tier="BLOCKED_SPECIAL" if verdict_is_blocked else verdict.tier,
+                            is_blocked=verdict_is_blocked,
+                            reasons=verdict_reasons,
+                            tags=verdict_tags,
+                        )
 
         # -------------------------------------------------------------
         # 4. 常规保守正则估值与物理加成 (覆盖 85%+ 普通样本，0 耗时 0 费用)

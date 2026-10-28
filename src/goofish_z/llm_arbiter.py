@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
+import threading
+import time
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
@@ -16,6 +19,69 @@ from typing import Any
 from goofish_z.search_quality import wants_parts, wants_service
 
 logger = logging.getLogger(__name__)
+
+# Bound transports that can still be resolving DNS or returning from a socket
+# operation after their caller's deadline. Never queue more work behind them.
+_TRANSPORT_SLOTS = threading.BoundedSemaphore(4)
+_MAX_RESPONSE_BYTES = 1024 * 1024
+
+
+def _read_before_deadline(req: urllib.request.Request, deadline: float) -> bytes:
+    """Bound the caller's entire connect/header/body wait, not each socket read.
+
+    urllib's timeout is an inactivity timeout and DNS can outlive it. A daemon
+    owns/cleans up the response; callers stop waiting at the absolute deadline.
+    The fixed slot limit prevents slow/stuck transports from accumulating.
+    """
+    if deadline <= time.monotonic():
+        raise TimeoutError("LLM deadline expired")
+    if not _TRANSPORT_SLOTS.acquire(blocking=False):
+        raise TimeoutError("LLM transport capacity exhausted")
+    done = threading.Event()
+    result: list[bytes] = []
+    errors: list[Exception] = []
+
+    def fetch() -> None:
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("LLM deadline expired before transport start")
+            with urllib.request.urlopen(req, timeout=remaining) as resp:
+                chunks = []
+                size = 0
+                while True:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("LLM response deadline expired")
+                    # HTTPResponse.read1 performs at most one underlying read;
+                    # read(n) could keep waiting while a peer trickles bytes.
+                    chunk = resp.read1(min(65536, _MAX_RESPONSE_BYTES + 1 - size))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size > _MAX_RESPONSE_BYTES:
+                        raise ValueError("LLM response exceeds size limit")
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("LLM response deadline expired")
+                result.append(b"".join(chunks))
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            _TRANSPORT_SLOTS.release()
+            done.set()
+
+    worker = threading.Thread(target=fetch, name="goofish-llm-transport", daemon=True)
+    try:
+        worker.start()
+    except BaseException:
+        _TRANSPORT_SLOTS.release()
+        raise
+    if not done.wait(max(0.0, deadline - time.monotonic())) or time.monotonic() >= deadline:
+        raise TimeoutError("LLM request deadline expired")
+    if errors:
+        raise errors[0]
+    return result[0]
+
 
 # 做工档位映射 (本地 Python 极速计算加成)
 HARDWARE_MOD_MAP = {
@@ -205,6 +271,13 @@ class LLMArbiter:
             or os.environ.get("GOOFISH_LLM_MODEL")
             or "antigravity-gemini-3.8-flash"
         )
+        # 单次调用的总等待上限；还会与调用方传来的批次截止时间取较小值。
+        try:
+            self.timeout = float(os.environ.get("GOOFISH_LLM_TIMEOUT_SECONDS", "5"))
+        except ValueError:
+            self.timeout = 5.0
+        if not math.isfinite(self.timeout) or self.timeout <= 0:
+            self.timeout = 5.0
 
     @property
     def configured(self) -> bool:
@@ -216,8 +289,17 @@ class LLMArbiter:
         item: dict[str, Any],
         query: str,
         baseline_price: float,
+        *,
+        deadline: float | None = None,
     ) -> LLMVerdict | None:
         """JEV 极简调用: 单次生成仅 ~15 个 token，本地 Python 负责所有加减与文案。"""
+        request_deadline = time.monotonic() + self.timeout
+        if deadline is not None:
+            if not math.isfinite(deadline):
+                return None
+            request_deadline = min(request_deadline, deadline)
+        if time.monotonic() >= request_deadline:
+            return None
         title = item.get("title", "")
         desc = item.get("desc", "")
         price_raw = item.get("price", "0")
@@ -249,86 +331,88 @@ class LLMArbiter:
                     "Content-Type": "application/json",
                 },
             )
-            with urllib.request.urlopen(req, timeout=25) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-                choice = result.get("choices", [{}])[0]
-                content = choice.get("message", {}).get("content") or ""
-                # print("JEV content received:", content)
+            payload = _read_before_deadline(req, request_deadline)
+            result = json.loads(payload.decode("utf-8"))
+            choice = result.get("choices", [{}])[0]
+            content = choice.get("message", {}).get("content") or ""
+            # print("JEV content received:", content)
 
-                m = re.search(r"\{.*?\}", content.replace("\n", ""))
-                if not m:
-                    logger.warning(f"JEV 未能解析出 JSON: {content}")
-                    return None
-                parsed = json.loads(m.group(0))
+            m = re.search(r"\{.*?\}", content.replace("\n", ""))
+            if not m:
+                logger.warning(f"JEV 未能解析出 JSON: {content}")
+                return None
+            parsed = json.loads(m.group(0))
 
-                b_type = int(parsed.get("t", 0))
-                real_p = float(parsed.get("p", 0.0))
-                m_tier = int(parsed.get("m", 0))
+            b_type = int(parsed.get("t", 0))
+            real_p = float(parsed.get("p", 0.0))
+            m_tier = int(parsed.get("m", 0))
 
-                # 校验状态代号是否在合法 0~4 范围内，非法则拒绝并回退本地引擎
-                if b_type not in BLOCK_TYPE_MAP:
-                    logger.warning(f"JEV 状态代号超出范围: {b_type} (合法为 0~4)，降级回退本地规则")
-                    return None
+            # 校验状态代号是否在合法 0~4 范围内，非法则拒绝并回退本地引擎
+            if b_type not in BLOCK_TYPE_MAP:
+                logger.warning(f"JEV 状态代号超出范围: {b_type} (合法为 0~4)，降级回退本地规则")
+                return None
 
-                # --- 本地 Python 纳秒级完成数学运算与文案组装 ---
-                is_blocked, block_reason = BLOCK_TYPE_MAP[b_type]
-                if b_type == 1 and wants_parts(query) or b_type == 2 and wants_service(query):
-                    is_blocked = False
+            # --- 本地 Python 纳秒级完成数学运算与文案组装 ---
+            is_blocked, block_reason = BLOCK_TYPE_MAP[b_type]
+            if b_type == 1 and wants_parts(query) or b_type == 2 and wants_service(query):
+                is_blocked = False
 
-                # 真实价格
-                raw_p_num = 0.0
-                if price_raw:
-                    try:
-                        raw_p_num = float(re.sub(r"[^\d.]", "", str(price_raw)))
-                    except ValueError:
-                        pass
-                effective_p = real_p if real_p > 0 else raw_p_num
+            # 真实价格
+            raw_p_num = 0.0
+            if price_raw:
+                try:
+                    raw_p_num = float(re.sub(r"[^\d.]", "", str(price_raw)))
+                except ValueError:
+                    pass
+            effective_p = real_p if real_p > 0 else raw_p_num
 
-                # 估值加成 (兼容 90HX 补电容与 3080 魔改)
-                is_90hx = "90HX" in query.upper()
-                if m_tier == 1:
-                    mod_name = "已补电容(满血x16)" if is_90hx else "3090豪华PCB"
-                    mod_delta = 40.0 if is_90hx else 120.0
-                    mod_desc = "已补满血x16电容(+¥40)" if is_90hx else "3090级豪华PCB加持(+¥120)"
-                else:
-                    mod_name, mod_delta, mod_desc = HARDWARE_MOD_MAP.get(m_tier, ("标准", 0.0, ""))
-                fair_val = (baseline_price + mod_delta) if not is_blocked else 0.0
-                vmi = (fair_val / effective_p) if effective_p > 0 else 0.0
+            # 估值加成 (兼容 90HX 补电容与 3080 魔改)
+            is_90hx = "90HX" in query.upper()
+            if m_tier == 1:
+                mod_name = "已补电容(满血x16)" if is_90hx else "3090豪华PCB"
+                mod_delta = 40.0 if is_90hx else 120.0
+                mod_desc = "已补满血x16电容(+¥40)" if is_90hx else "3090级豪华PCB加持(+¥120)"
+            else:
+                mod_name, mod_delta, mod_desc = HARDWARE_MOD_MAP.get(m_tier, ("标准", 0.0, ""))
+            fair_val = (baseline_price + mod_delta) if not is_blocked else 0.0
+            vmi = (fair_val / effective_p) if effective_p > 0 else 0.0
 
-                reasons = []
-                tags = []
-                tier_str = "FAIR_VALUE"
-                if is_blocked:
-                    tier_str = "BLOCKED_SPECIAL"
-                    reasons.append(block_reason)
-                elif vmi < 0.65 and effective_p > 0:
-                    tier_str = "OVERPRICED_LOW_VALUE"
-                    is_blocked = True
-                    reasons.append(f"价格与价值严重不匹配(VMI={vmi:.2f}<0.65)")
-                elif vmi >= 1.05:
-                    tier_str = "GREAT_VALUE"
-                elif vmi < 0.90:
-                    tier_str = "SLIGHTLY_HIGH"
+            reasons = []
+            tags = []
+            tier_str = "FAIR_VALUE"
+            if is_blocked:
+                tier_str = "BLOCKED_SPECIAL"
+                reasons.append(block_reason)
+            elif vmi < 0.65 and effective_p > 0:
+                tier_str = "OVERPRICED_LOW_VALUE"
+                is_blocked = True
+                reasons.append(f"价格与价值严重不匹配(VMI={vmi:.2f}<0.65)")
+            elif vmi >= 1.05:
+                tier_str = "GREAT_VALUE"
+            elif vmi < 0.90:
+                tier_str = "SLIGHTLY_HIGH"
 
-                if not is_blocked:
-                    if real_p > 0 and real_p > raw_p_num:
-                        tags.append(f"多SKU真实到手价:¥{real_p:.0f}")
-                        reasons.append(f"多SKU引流还原: 实际到手价为¥{real_p:.0f}")
-                    if mod_desc:
-                        tags.append(mod_name)
-                        if mod_delta != 0:
-                            reasons.append(mod_desc)
+            if not is_blocked:
+                if real_p > 0 and real_p > raw_p_num:
+                    tags.append(f"多SKU真实到手价:¥{real_p:.0f}")
+                    reasons.append(f"多SKU引流还原: 实际到手价为¥{real_p:.0f}")
+                if mod_desc:
+                    tags.append(mod_name)
+                    if mod_delta != 0:
+                        reasons.append(mod_desc)
 
-                return LLMVerdict(
-                    is_genuine_target=not is_blocked,
-                    effective_price=effective_p,
-                    fair_market_value=fair_val,
-                    vmi=vmi,
-                    tier=tier_str,
-                    is_blocked=is_blocked,
-                    reasons=reasons,
-                    tags=tags,
-                )
+            if time.monotonic() >= request_deadline:
+                return None
+            return LLMVerdict(
+                is_genuine_target=not is_blocked,
+                effective_price=effective_p,
+                fair_market_value=fair_val,
+                vmi=vmi,
+                tier=tier_str,
+                is_blocked=is_blocked,
+                reasons=reasons,
+                tags=tags,
+            )
         except Exception as e:
             logger.warning(f"JEV 仲裁调用失败: {e}")
             return None
