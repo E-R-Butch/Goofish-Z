@@ -1,5 +1,6 @@
 """Offline coverage of the opt-in Chrome test's startup supervision."""
 import asyncio
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -19,18 +20,21 @@ class BrowserStartupWaitCase(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(chrome_test.browser_mod, "run_in_browser", fail):
             with self.assertRaisesRegex(RuntimeError, "Executable doesn't exist"):
-                await asyncio.wait_for(chrome_test.hold_then_cancel(None, lambda: {}, 25), 1)
+                await asyncio.wait_for(chrome_test.hold_then_cancel(None, lambda: {"profile": None, "alive": False}, 25), 1)
 
     async def test_snapshot_failure_cancels_and_awaits_worker(self):
         stopped = asyncio.Event()
+        started = threading.Event()
 
         async def hold(_factory):
             try:
+                started.set()
                 await asyncio.Event().wait()
             finally:
                 stopped.set()
 
         def fail_snapshot():
+            self.assertTrue(started.wait(2), "worker did not start")
             raise ValueError("snapshot failed")
 
         with patch.object(chrome_test.browser_mod, "run_in_browser", hold):
@@ -40,28 +44,40 @@ class BrowserStartupWaitCase(unittest.IsolatedAsyncioTestCase):
 
     async def test_ready_browser_is_cancelled_and_awaited(self):
         stopped = asyncio.Event()
+        started = threading.Event()
 
         async def hold(_factory):
             try:
+                started.set()
                 await asyncio.Event().wait()
             finally:
                 stopped.set()
 
+        def ready_snapshot():
+            self.assertTrue(started.wait(2), "worker did not start")
+            return {"profile": "synthetic", "alive": True}
+
         with patch.object(chrome_test.browser_mod, "run_in_browser", hold), patch.object(chrome_test, "pids_for_profile", return_value=[123]):
-            result = await chrome_test.hold_then_cancel(None, lambda: {"profile": "synthetic", "alive": True})
+            result = await chrome_test.hold_then_cancel(None, ready_snapshot)
         self.assertEqual(result, "synthetic")
         self.assertTrue(stopped.is_set())
 
     async def test_timeout_cleans_up_worker(self):
         stopped = asyncio.Event()
+        started = threading.Event()
 
         async def hold(_factory):
             try:
+                started.set()
                 await asyncio.Event().wait()
             finally:
                 stopped.set()
 
+        def pending_snapshot():
+            self.assertTrue(started.wait(2), "worker did not start")
+            return {"profile": None, "alive": False}
+
         with patch.object(chrome_test.browser_mod, "run_in_browser", hold):
             with self.assertRaisesRegex(AssertionError, "超时"):
-                await chrome_test.hold_then_cancel(None, lambda: {"profile": None, "alive": False}, 0.01)
+                await chrome_test.hold_then_cancel(None, pending_snapshot, 0.01)
         self.assertTrue(stopped.is_set())
