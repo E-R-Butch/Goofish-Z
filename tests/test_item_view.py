@@ -6,10 +6,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import pathlib
+import shutil
+import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from goofish_z.commands.item import view as view_mod  # noqa: F401 - 供各用例引用
+from goofish_z.core import guard as guard_mod
 from goofish_z.core.errors import (
     AuthRequiredError,
     GoofishError,
@@ -25,7 +29,31 @@ from goofish_z.core.item_page import (
     read_item_page,
 )
 
+
+class _IsolatedGuardMixin:
+    """把 guard 的状态文件重定向到临时目录。
+
+    这里有用例会真的走 `_trip_on_risk()`；不隔离就会把 hard 级冷却写进真实运行目录，
+    污染本机的熔断状态（PR review 抓到过一次）。
+    """
+
+    def setUp(self) -> None:  # noqa: D401 - unittest hook
+        super().setUp()
+        self._guard_dir = pathlib.Path(tempfile.mkdtemp())
+        self._guard_patch = patch.object(
+            guard_mod, "STATE_PATH", self._guard_dir / "circuit.json"
+        )
+        self._guard_patch.start()
+
+    def tearDown(self) -> None:
+        self._guard_patch.stop()
+        shutil.rmtree(self._guard_dir, ignore_errors=True)
+        super().tearDown()
+
+
 SID = "0000000000000"
+# 长度不同的全零 ID：表达「不是同一个商品」而不触发公开仓库的长数字门禁。
+OTHER_SID = "000000000000"
 
 
 def payload(item_id: str = SID, **overrides) -> dict:
@@ -128,7 +156,7 @@ class FakePage:
             handler() if argument is None else handler(argument)
 
 
-class MatchesRequestTest(unittest.TestCase):
+class MatchesRequestTest(_IsolatedGuardMixin, unittest.TestCase):
     def test_accepts_detail_request_for_target_item(self) -> None:
         self.assertTrue(_matches_request(detail_request(), SID))
 
@@ -137,7 +165,7 @@ class MatchesRequestTest(unittest.TestCase):
         self.assertTrue(_matches_request(request(url, None), SID))
 
     def test_rejects_other_item_id(self) -> None:
-        self.assertFalse(_matches_request(detail_request("0000000000001"), SID))
+        self.assertFalse(_matches_request(detail_request(OTHER_SID), SID))
 
     def test_rejects_other_path_and_host(self) -> None:
         other_path = request("https://h5api.m.goofish.com/h5/mtop.taobao.idle.other/1.0/")
@@ -150,7 +178,7 @@ class MatchesRequestTest(unittest.TestCase):
         self.assertFalse(_matches_request(broken, SID))
 
 
-class DecodeResponseTest(unittest.TestCase):
+class DecodeResponseTest(_IsolatedGuardMixin, unittest.TestCase):
     def test_accepts_plain_json(self) -> None:
         raw = _decode_response(json.dumps(payload()), SID)
         self.assertEqual(raw["data"]["itemDO"]["itemId"], SID)
@@ -205,10 +233,10 @@ class DecodeResponseTest(unittest.TestCase):
 
     def test_rejects_item_id_mismatch(self) -> None:
         with self.assertRaises(UpstreamError):
-            _decode_response(json.dumps(payload(item_id="0000000000009")), SID)
+            _decode_response(json.dumps(payload(item_id=OTHER_SID)), SID)
 
 
-class ItemResponseTest(unittest.IsolatedAsyncioTestCase):
+class ItemResponseTest(_IsolatedGuardMixin, unittest.IsolatedAsyncioTestCase):
     async def test_delivers_success(self) -> None:
         page = FakePage()
         observer = ItemResponse(page, SID)
@@ -265,8 +293,11 @@ class ItemResponseTest(unittest.IsolatedAsyncioTestCase):
 
         producer = asyncio.create_task(flood())
         try:
-            with self.assertRaises(RiskControlError):
-                await asyncio.wait_for(observer.wait(0.05), 0.5)
+            # 这条会真的走 _trip_on_risk；不打桩就会把 hard 级冷却写进真实运行目录。
+            with patch("goofish_z.core.guard.trip") as trip:
+                with self.assertRaises(RiskControlError):
+                    await asyncio.wait_for(observer.wait(0.05), 0.5)
+                trip.assert_called()
         finally:
             producer.cancel()
             await asyncio.gather(producer, return_exceptions=True)
@@ -340,7 +371,7 @@ class ItemResponseTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(page.handlers.get(event), event)
 
 
-class ReadItemPageTest(unittest.IsolatedAsyncioTestCase):
+class ReadItemPageTest(_IsolatedGuardMixin, unittest.IsolatedAsyncioTestCase):
     async def test_navigates_with_commit_and_reads_response(self) -> None:
         page = FakePage()
 
@@ -375,7 +406,7 @@ class ReadItemPageTest(unittest.IsolatedAsyncioTestCase):
                 await read_item_page(FakePage(), SID, timeout=bad)
 
 
-class ViewResultTest(unittest.TestCase):
+class ViewResultTest(_IsolatedGuardMixin, unittest.TestCase):
     def test_maps_detail_fields(self) -> None:
         result = view_mod._view_result(payload(), SID)
         self.assertEqual(result["item_id"], SID)
@@ -402,7 +433,7 @@ class ViewResultTest(unittest.TestCase):
         self.assertEqual(view_mod._view_result(raw, SID)["price"], "")
 
 
-class FallbackTest(unittest.IsolatedAsyncioTestCase):
+class FallbackTest(_IsolatedGuardMixin, unittest.IsolatedAsyncioTestCase):
     """兜底只在「页面一次匹配请求都没发」时启用，且必须真的把数据带回来。
 
     历史缺陷（PR review 抓到的）：注入成功后 JS 只回 `{ok: true}`，Python 侧却无条件
@@ -418,7 +449,7 @@ class FallbackTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_injected_response_is_validated_like_the_primary_path(self) -> None:
         page = FakePage()
-        page.evaluate_result = {"ok": True, "raw": payload(item_id="0000000000009")}
+        page.evaluate_result = {"ok": True, "raw": payload(item_id=OTHER_SID)}
         with self.assertRaises(UpstreamError):
             await view_mod._fetch_via_page_mtop(page, SID)
 
