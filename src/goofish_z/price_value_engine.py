@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -174,19 +175,23 @@ class PriceValueEngine:
             self._llm_budget_seconds = float(os.environ.get("GOOFISH_LLM_BATCH_BUDGET_SECONDS", "10"))
         except ValueError:
             self._llm_budget_seconds = 10.0
+        self._llm_max_escalations = max(0, self._llm_max_escalations)
+        if not math.isfinite(self._llm_budget_seconds):
+            self._llm_budget_seconds = 10.0
+        self._llm_budget_seconds = max(0.0, self._llm_budget_seconds)
         self._llm_escalations = 0
         self._llm_deadline: float | None = None
 
     def _llm_slot_available(self) -> bool:
         """本条还能不能调 L2：条数上限 + 整批时间预算，任一耗尽即回退 L1。"""
-        if self._llm_escalations >= self._llm_max_escalations:
+        if self._llm_escalations >= self._llm_max_escalations or self._llm_budget_seconds <= 0:
             return False
         now = time.monotonic()
         if self._llm_deadline is None:
             self._llm_deadline = now + self._llm_budget_seconds
         elif now >= self._llm_deadline:
             logger.info(
-                "L2 仲裁预算 {:.0f}s 已用完（已用 {} 条），本条回退 L1",
+                "L2 仲裁预算 %.0fs 已用完（已用 %s 条），本条回退 L1",
                 self._llm_budget_seconds,
                 self._llm_escalations,
             )
@@ -311,8 +316,11 @@ class PriceValueEngine:
                     escalate = False
                 else:
                     logger.info(f"触发 JEV 极简仲裁 [{escalate_reason}]: {title[:30]}")
-                    verdict = self.arbiter.judge_jev(item=item, query=active_query, baseline_price=base)
-                    if verdict is not None:
+                    verdict = self.arbiter.judge_jev(
+                        item=item, query=active_query, baseline_price=base,
+                        deadline=self._llm_deadline,
+                    )
+                    if verdict is not None and time.monotonic() < self._llm_deadline:
                         verdict_is_blocked = verdict.is_blocked
                         verdict_reasons = list(verdict.reasons)
                         verdict_tags = list(verdict.tags)

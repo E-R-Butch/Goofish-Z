@@ -99,13 +99,13 @@ class TestLowValueClassifier(unittest.TestCase):
 
         # 1. 状态码超出 0~4 范围时返回 None (降级回退本地规则)
         with patch("urllib.request.urlopen") as mock_url:
-            mock_url.return_value.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"{\\"t\\":9,\\"p\\":0,\\"m\\":0}"}}]}'
+            mock_url.return_value.__enter__.return_value.read1.side_effect = [b'{"choices":[{"message":{"content":"{\\"t\\":9,\\"p\\":0,\\"m\\":0}"}}]}', b"" ]
             v = arbiter.judge_jev({"title": "测试", "price": "1000"}, "4090", 1000.0)
             self.assertIsNone(v)
 
         # 2. t=0 但真实价格过高导致 VMI < 0.65 时，必须拦截
         with patch("urllib.request.urlopen") as mock_url:
-            mock_url.return_value.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"{\\"t\\":0,\\"p\\":4000,\\"m\\":0}"}}]}'
+            mock_url.return_value.__enter__.return_value.read1.side_effect = [b'{"choices":[{"message":{"content":"{\\"t\\":0,\\"p\\":4000,\\"m\\":0}"}}]}', b"" ]
             v = arbiter.judge_jev({"title": "测试显卡", "price": "1000"}, "4090", 1500.0)
             self.assertIsNotNone(v)
             assert v is not None
@@ -129,7 +129,7 @@ class TestLowValueClassifier(unittest.TestCase):
         arbiter = LLMArbiter(api_key="mock_key", base_url="http://mock-llm.invalid/v1")
         # 用户显式搜索“4090租赁”，返回 t=2 时不应拦截
         with patch("urllib.request.urlopen") as mock_url:
-            mock_url.return_value.__enter__.return_value.read.return_value = b'{"choices":[{"message":{"content":"{\\"t\\":2,\\"p\\":0,\\"m\\":0}"}}]}'
+            mock_url.return_value.__enter__.return_value.read1.side_effect = [b'{"choices":[{"message":{"content":"{\\"t\\":2,\\"p\\":0,\\"m\\":0}"}}]}', b"" ]
             v = arbiter.judge_jev({"title": "RTX4090 GPU算力租赁按天出租", "price": "50"}, "4090租赁", 50.0)
             self.assertIsNotNone(v)
             assert v is not None
