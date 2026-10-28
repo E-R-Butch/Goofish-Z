@@ -25,7 +25,11 @@ from typing import Any
 
 from goofish_z.core import Strategy, command
 from goofish_z.core.errors import AuthRequiredError
-from goofish_z.core.session import resolve_cookie_path, write_cookies_json, goofish_cookie_values
+from goofish_z.core.session import (
+    goofish_cookie_values,
+    resolve_cookie_path,
+    write_cookies_json,
+)
 
 
 @command(

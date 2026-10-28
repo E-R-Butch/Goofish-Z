@@ -9,13 +9,12 @@ accessToken 会被缓存到 ~/.goofish-z/im_token.json（TTL 由 GOOFISH_TOKEN_T
 import json
 import os
 import time
-from pathlib import Path
 from typing import Any
 
 from goofish_z.core.errors import AuthRequiredError
 from goofish_z.core.mtop import call
-from goofish_z.core.session import Session
 from goofish_z.core.paths import runtime_data_path
+from goofish_z.core.session import Session
 
 IM_APP_KEY = "444e9908a51d1cb236a27862abc769c9"
 TOKEN_CACHE = runtime_data_path("im_token.json")

@@ -6,6 +6,7 @@ from threading import Barrier
 from unittest.mock import patch
 
 from support import OfflineCase
+
 from goofish_z.core.errors import GoofishError, RateLimitedError, RiskControlError
 
 
@@ -69,8 +70,8 @@ class SafetyTest(OfflineCase):
         self.assertFalse(self.limiter.STATE_PATH.exists())
 
     def test_circuit_blocks_direct_mtop_and_browser(self):
-        from goofish_z.core.mtop import call
         from goofish_z.core.browser import goofish_page
+        from goofish_z.core.mtop import call
         self.guard.trip("synthetic RGV587")
         with self.assertRaises(RiskControlError):
             call(None, "synthetic.api", {})

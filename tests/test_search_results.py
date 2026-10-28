@@ -5,9 +5,14 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
-
 from support import OfflineCase, fixture
-from goofish_z.core.errors import AuthRequiredError, GoofishError, RateLimitedError, RiskControlError
+
+from goofish_z.core.errors import (
+    AuthRequiredError,
+    GoofishError,
+    RateLimitedError,
+    RiskControlError,
+)
 from goofish_z.core.price import normalize_price, price_value
 from goofish_z.db import WatchDB
 

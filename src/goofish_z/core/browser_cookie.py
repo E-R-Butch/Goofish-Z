@@ -92,7 +92,7 @@ def _extract_in_process(browser: str) -> list[dict[str, Any]] | None:
 
     try:
         jars = [loader(domain_name=domain) for domain in GOOFISH_DOMAINS]
-    except Exception as e:  # noqa: BLE001 — 浏览器没装/DB 锁/密钥解密失败都走这里
+    except Exception as e:
         logger.trace(f"{browser} in-process 抽取失败：{e}")
         return None
 

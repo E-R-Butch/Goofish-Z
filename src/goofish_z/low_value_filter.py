@@ -125,13 +125,7 @@ class LowValueClassifier:
             matched_sku = None
             for s in skus:
                 spec_name = s.get("name") or s.get("spec") or ""
-                if "20G" in query.upper() and "20G" in spec_name.upper():
-                    matched_sku = s
-                    break
-                elif "32G" in query.upper() and any(k in spec_name.upper() for k in ("32G", "16GX2", "16G*2")):
-                    matched_sku = s
-                    break
-                elif "256G" in query.upper() and "256G" in spec_name.upper():
+                if "20G" in query.upper() and "20G" in spec_name.upper() or "32G" in query.upper() and any(k in spec_name.upper() for k in ("32G", "16GX2", "16G*2")) or "256G" in query.upper() and "256G" in spec_name.upper():
                     matched_sku = s
                     break
 

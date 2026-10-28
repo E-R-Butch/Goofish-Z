@@ -9,6 +9,24 @@ permissions:
   contents: read
 
 jobs:
+  # 静态检查：无浏览器依赖，最快给出反馈
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Fresh editable install
+        run: python -m pip install -e ".[test]"
+
+      - name: Ruff
+        run: ruff check src tests
+
+  # 单测 + GUI 渲染 + 覆盖率门槛
   python:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -37,3 +55,36 @@ jobs:
 
       - name: Test GUI rendering
         run: node --test tests/gui.test.js
+
+      - name: Coverage gate
+        if: matrix.python == '3.11'
+        run: |
+          coverage run -m unittest discover -s tests >/dev/null
+          coverage report --fail-under=66
+
+  # 真实浏览器回归：只跑显式开启的用例，验证取消/异常后不留孤儿 Chrome
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Fresh editable install
+        run: python -m pip install -e ".[test]"
+
+      - name: Install browser runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          python -m playwright install --with-deps chromium
+
+      - name: Real Chrome teardown regression
+        env:
+          GOOFISH_TEST_REAL_CHROME: "1"
+          GOOFISH_HEADLESS: "1"
+        run: |
+          xvfb-run -a python -m unittest discover -s tests -p "test_browser_real_chrome.py" -v

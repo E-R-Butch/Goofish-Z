@@ -21,14 +21,24 @@ from loguru import logger
 
 from goofish_z.core import Strategy, command
 from goofish_z.core.browser import (
-    WARM_REUSE, auto_scroll, run_in_browser, warm_page,
+    WARM_REUSE,
+    auto_scroll,
+    run_in_browser,
+    warm_page,
 )
 from goofish_z.core.errors import (
-    AuthRequiredError, BlockedError, GoofishError, RateLimitedError, RiskControlError,
+    AuthRequiredError,
+    BlockedError,
+    GoofishError,
+    RateLimitedError,
+    RiskControlError,
 )
 from goofish_z.core.price import normalize_price
 from goofish_z.core.search_sort import (
-    observe_sorted_action, select_native_sort, validate_sort, verify_sorted_items,
+    observe_sorted_action,
+    select_native_sort,
+    validate_sort,
+    verify_sorted_items,
 )
 
 MAX_LIMIT = 50
@@ -353,7 +363,8 @@ async def _wait_for_cards(page: Any) -> None:
 
 async def _read_search_page(page: Any, limit: int) -> dict[str, Any]:
     """An authentication redirect can replace the DOM during the first read."""
-    from playwright.async_api import Error as BrowserError, TimeoutError as BrowserTimeout
+    from playwright.async_api import Error as BrowserError
+    from playwright.async_api import TimeoutError as BrowserTimeout
 
     want = min(limit, PAGE_SIZE)
     for attempt in range(2):
@@ -516,7 +527,11 @@ def _filtered_item(item: dict[str, Any], reasons: list[str]) -> dict[str, Any]:
 def filter_search_items(query: str, items: list[dict[str, Any]]) -> tuple[list[dict], list[dict]]:
     """Pure classification shared by browser results and regression replays."""
     from goofish_z.blacklist import extract_generation, is_broken_stick, is_noise
-    from goofish_z.search_quality import capacity_reasons, listing_reasons, model_reasons
+    from goofish_z.search_quality import (
+        capacity_reasons,
+        listing_reasons,
+        model_reasons,
+    )
 
     passed, excluded = [], []
     required_generation = extract_generation(query)
@@ -557,8 +572,8 @@ def search(
     resolve_skus: bool = False,
 ) -> dict[str, Any]:
     # 限流：搜索间隔 30s（防接口级风控）
-    from goofish_z.core.limiter import check as rate_check
     from goofish_z.core.guard import check as guard_check
+    from goofish_z.core.limiter import check as rate_check
 
     if not str(query).strip():
         raise ValueError("搜索关键词不能为空")
@@ -605,9 +620,8 @@ def search(
         result["sku_resolution"] = sku_resolution
 
     if filter_blacklist:
-        from goofish_z.blacklist import BlacklistDB
-        from pathlib import Path
 
+        from goofish_z.blacklist import BlacklistDB
         from goofish_z.core.paths import runtime_data_path
 
         db = BlacklistDB(runtime_data_path("watch.db"))

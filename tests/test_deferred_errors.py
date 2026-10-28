@@ -9,9 +9,14 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
-
 from support import OfflineCase
-from goofish_z.core.errors import AuthRequiredError, GoofishError, RateLimitedError, UpstreamError
+
+from goofish_z.core.errors import (
+    AuthRequiredError,
+    GoofishError,
+    RateLimitedError,
+    UpstreamError,
+)
 from goofish_z.core.state_file import file_version, read_state
 
 

@@ -5,7 +5,6 @@ from typing import Any
 from goofish_z.core import Session, Strategy, command
 from goofish_z.core.mtop import call
 
-
 _DETAIL_FIELDS = (
     "title",
     "desc",

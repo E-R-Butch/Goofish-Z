@@ -7,9 +7,9 @@ import json
 import sys
 from contextlib import asynccontextmanager
 
+from loguru import logger
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from loguru import logger
 
 from goofish_z.core.errors import GoofishError
 from goofish_z.core.registry import discover, iter_commands

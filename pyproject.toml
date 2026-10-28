@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["httpx>=0.27"]
+test = ["httpx>=0.27", "ruff>=0.17,<0.18", "coverage>=7.6"]
 
 [project.scripts]
 goofish-z = "goofish_z.cli:app"
@@ -34,3 +34,40 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/goofish_z"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+# 起步集：先拦真实缺陷（B）与导入卫生（I/F），风格类规则逐批收紧。
+# 注意：ruff 拦不住「跨事件循环使用浏览器对象」「取消时漏进程」这类问题，
+# 那类回归靠 tests/test_browser_loop_affinity.py 与 tests/test_browser_real_chrome.py。
+select = ["E", "F", "I", "B", "SIM"]
+ignore = [
+    "E501",   # 行长由评审把关，中文注释占比高
+    "E402",   # CLI / MCP 入口存在有意的延迟导入
+    "E701",   # 单行 if x: return —— 与 E702 一起待清理
+    "E702",
+    "SIM102", # 嵌套 if 合并：历史代码面大，收益低
+    "SIM103",
+    "SIM105", # contextlib.suppress 属可读性取舍
+    "SIM110",
+    "SIM117", # 嵌套 with 合并同上
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试里用闭包捕获循环变量构造断言是常规写法
+"tests/*" = ["B023"]
+
+[tool.coverage.run]
+branch = true
+source = ["src/goofish_z"]
+
+[tool.coverage.report]
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

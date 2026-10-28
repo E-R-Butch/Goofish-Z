@@ -1,12 +1,12 @@
-import copy
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 from unittest.mock import patch
 
 from support import OfflineCase, fixture
+
+from goofish_z.blacklist import BlacklistDB
 from goofish_z.core.errors import AuthRequiredError, RateLimitedError, RiskControlError
 from goofish_z.db import WatchDB
-from goofish_z.blacklist import BlacklistDB
 from goofish_z.signals import SellerSignalDB
 
 
@@ -32,7 +32,7 @@ class WatchTest(OfflineCase):
             result = self.watch.watch_run(all=True)
         self.assertEqual(result["succeeded"], 3)
         self.assertEqual(result["failed"], 0)
-        self.assertTrue(all(b-a >= 30 for a,b in zip(starts, starts[1:])))
+        self.assertTrue(all(b-a >= 30 for a, b in zip(starts, starts[1:], strict=False)))
 
     def test_monitor_target_is_unambiguous_for_cli_and_mcp(self):
         with patch.object(self.search, "search") as search:

@@ -4,6 +4,7 @@ No real item IDs, seller data, links or original descriptions are retained.
 Low amount alone is deliberately not a positive label for bait.
 """
 from support import OfflineCase, fixture
+
 from goofish_z.commands.search.search import filter_search_items
 
 

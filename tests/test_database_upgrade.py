@@ -1,8 +1,8 @@
-import json
 import sqlite3
 from contextlib import closing
 
 from support import OfflineCase, fixture
+
 from goofish_z.db import WatchDB
 
 

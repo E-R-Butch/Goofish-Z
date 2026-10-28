@@ -86,11 +86,16 @@ def watch_run(watch_id: int | None = None, all: bool = False, limit: int = 20,
 
 
 def run_watches(watch_id=None, all=False, limit=20, enrich_sellers=False, *, progress=None, cancel=None):
-    from goofish_z.commands.search.search import search as search_cmd
     from goofish_z.blacklist import BlacklistDB
-    from goofish_z.signals import SellerSignalDB
-    from goofish_z.core.errors import AuthRequiredError, NotFoundError, RateLimitedError, RiskControlError
+    from goofish_z.commands.search.search import search as search_cmd
+    from goofish_z.core.errors import (
+        AuthRequiredError,
+        NotFoundError,
+        RateLimitedError,
+        RiskControlError,
+    )
     from goofish_z.core.guard import check as guard_check
+    from goofish_z.signals import SellerSignalDB
 
     if bool(all) == (watch_id is not None):
         raise ValueError("需要且只能指定 watch_id 或 --all 其中一个")
@@ -202,7 +207,6 @@ def _enrich_seller_nicks(items: list[dict[str, Any]], watch: dict[str, Any]) -> 
     每个商品间隔 1.5s，降低触发风控的概率。
     """
     from goofish_z.blacklist import BlacklistDB
-    from goofish_z.commands.item.view import view as item_view
     from goofish_z.core.errors import AuthRequiredError, GoofishError, RiskControlError
 
     bdb = BlacklistDB(DEFAULT_DB)
@@ -243,8 +247,8 @@ def _fetch_seller_nick_via_page(item_id: str) -> str:
     """
     import asyncio
 
-    from goofish_z.core.errors import AuthRequiredError, RiskControlError
     from goofish_z.core.browser import goofish_page
+    from goofish_z.core.errors import AuthRequiredError, RiskControlError
 
     JS = """
 (itemId) => {
@@ -275,7 +279,7 @@ def _fetch_seller_nick_via_page(item_id: str) -> str:
         return asyncio.run(_run())
     except (AuthRequiredError, RiskControlError):
         raise
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning(f"[seller] 页面抓取卖家昵称失败 {item_id}: {e}")
         return ""
 

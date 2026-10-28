@@ -44,7 +44,7 @@ async def _wait_for_qr(page: Any, timeout_ms: int = 15000) -> bool:
     """等 passport iframe 里 QR canvas 渲染出来（说明可扫）。"""
     try:
         iframe_el = await page.wait_for_selector("#alibaba-login-box", timeout=timeout_ms)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning(f"[qr] 未检测到 passport iframe：{e}（首页或许已登录？）")
         return False
     frame = await iframe_el.content_frame()
@@ -55,7 +55,7 @@ async def _wait_for_qr(page: Any, timeout_ms: int = 15000) -> bool:
         await frame.wait_for_load_state("domcontentloaded", timeout=5000)
         await frame.wait_for_selector(".qrcode-login canvas", timeout=timeout_ms)
         return True
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning(f"[qr] QR canvas 未渲染：{e}")
         return False
 
@@ -130,7 +130,7 @@ def login_via_qr(*, timeout: int | None = None, persist: bool = True) -> list[di
     timeout = _resolve_timeout(timeout)
     try:
         cookies = asyncio.run(_login_via_qr_async(timeout))
-    except Exception as e:  # noqa: BLE001 — Playwright 起不来、Chrome 未装等都走这里
+    except Exception as e:
         logger.warning(f"QR 扫码登录失败：{e}")
         return {}
 
