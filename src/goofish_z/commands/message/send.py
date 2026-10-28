@@ -18,6 +18,7 @@ from goofish_z.core.ws import (
     register,
     send_image,
     send_text,
+    wait_ready,
     wait_send_ack,
 )
 
@@ -81,9 +82,14 @@ async def _send(
 ) -> dict[str, Any]:
     token = get_access_token(session)
     async with connect(session) as ws:
-        await register(ws, session, token)
+        mids = await register(ws, session, token)
         hb = asyncio.create_task(heartbeat_loop(ws))
         try:
+            # `/r/`（建会话/发消息）必须等 `/s/vulcan` 到达后再发，否则服务端回
+            # code 400；`/reg` 返回 200 不代表可发。顺带校验握手回包。
+            if not await wait_ready(ws, mids=mids):
+                raise GoofishError("IM 连接未就绪（等待 /s/vulcan 超时），未发送")
+
             if item_id:
                 await create_chat(ws, myid=session.unb, toid=toid, item_id=item_id)
                 await asyncio.sleep(0.5)

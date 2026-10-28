@@ -4,6 +4,7 @@
 - search      : 30s 一次（搜索列表，轻）
 - detail      : 5s 一次（商品详情，中）
 - write       : 60s 一次（发布/发消息，重）
+- media       : 60s 内 9 次（图片上传，CDN 不吃经营类写预算）
 - seller_page : 4s 一次（卖家昵称页面抓取）
 
 状态文件：~/.goofish-z/limiter.json（进程间共享）
@@ -27,12 +28,21 @@ BUCKETS: dict[str, tuple[int, int]] = {
     "detail": (5, 1),         # 5s 1 次详情
     "seller_page": (4, 1),    # 4s 1 次页面抓取
     "write": (60, 1),         # 60s 1 次写操作
+    # 图片上传打的是 CDN（stream-upload.goofish.com），不占商品发布/发消息的经营类
+    # 写预算。上游实测口径：媒体 9 次/分钟，经营类仍是 1 次/分钟。
+    "media": (60, 9),
+}
+
+# 旧桶名 → 现行桶。media.write 从「合并进 write」改为独立媒体桶，否则 3 张图要 3 分钟。
+LEGACY_BUCKETS: dict[str, str] = {
+    "item.write": "write",
+    "message.write": "write",
+    "media.write": "media",
 }
 
 
 def _canonical_bucket(bucket: str) -> str:
-    if bucket in ("item.write", "message.write", "media.write"):
-        return "write"
+    bucket = LEGACY_BUCKETS.get(bucket, bucket)
     if bucket not in BUCKETS:
         raise ValueError(f"未知限流 bucket: {bucket}")
     return bucket
@@ -56,9 +66,9 @@ def _bucket_conf(bucket: str) -> tuple[int, int]:
 def _load() -> dict[str, list[float]]:
     state = read_state(STATE_PATH)
     # Keep recent reservations made by earlier versions under legacy names.
-    for legacy in ("item.write", "message.write", "media.write"):
+    for legacy, current in LEGACY_BUCKETS.items():
         if legacy in state:
-            state.setdefault("write", []).extend(state.pop(legacy))
+            state.setdefault(current, []).extend(state.pop(legacy))
     return state
 
 
