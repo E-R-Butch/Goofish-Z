@@ -5,15 +5,36 @@
 """
 
 import json
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 from goofish_z.commands.category.recommend import recommend
 from goofish_z.commands.location.default import default as get_default_location
 from goofish_z.commands.media.upload import upload
 from goofish_z.core import Session, Strategy, command
+from goofish_z.core.errors import GoofishError
 from goofish_z.core.guard import watch
 from goofish_z.core.limiter import acquire
 from goofish_z.core.mtop import call
+
+
+def _cents(value: Any, field: str) -> str:
+    """元 → 分的唯一换算口，用 Decimal 避免浮点误差（19.99*100 曾算出 1998）。"""
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        raise GoofishError(f"{field} 必须是有效数字") from None
+    try:
+        valid = (
+            amount.is_finite()
+            and amount >= 0
+            and amount == amount.quantize(Decimal("0.01"))
+        )
+    except InvalidOperation:
+        valid = False
+    if not valid:
+        raise GoofishError(f"{field} 必须非负且最多两位小数")
+    return str(int(amount * 100))
 
 
 @command(
@@ -121,7 +142,7 @@ def _build_publish_data(
         post_fee["templateId"] = "-100"
     elif delivery == "一口价":
         post_fee["supportFreight"] = True
-        post_fee["postPriceInCent"] = str(int(post_price * 100))
+        post_fee["postPriceInCent"] = _cents(post_price, "post_price")
         post_fee["templateId"] = "0"
     elif delivery == "无需邮寄":
         post_fee["templateId"] = "0"
@@ -129,9 +150,9 @@ def _build_publish_data(
     price_dto: dict[str, str] = {}
     default_price = price <= 0
     if not default_price:
-        price_dto["priceInCent"] = str(int(price * 100))
+        price_dto["priceInCent"] = _cents(price, "price")
     if original_price and original_price > 0:
-        price_dto["origPriceInCent"] = str(int(original_price * 100))
+        price_dto["origPriceInCent"] = _cents(original_price, "original_price")
 
     item_addr: dict[str, Any] = {}
     if location.get("division_id"):
