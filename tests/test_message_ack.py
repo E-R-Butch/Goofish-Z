@@ -103,6 +103,7 @@ class MessageAckTest(OfflineCase):
         with (
             patch.object(self.send_mod, "connect", return_value=_FakeConnect()),
             patch.object(self.send_mod, "register", new=AsyncMock()),
+            patch.object(self.send_mod, "wait_ready", new=AsyncMock(return_value=True)),
             patch.object(self.send_mod, "heartbeat_loop", new=AsyncMock()),
             patch.object(self.send_mod, "send_text", new=AsyncMock(return_value="MID1")),
             patch.object(self.send_mod, "wait_send_ack", new=AsyncMock(return_value=None)),
@@ -120,6 +121,7 @@ class MessageAckTest(OfflineCase):
         with (
             patch.object(self.send_mod, "connect", return_value=_FakeConnect()),
             patch.object(self.send_mod, "register", new=AsyncMock()),
+            patch.object(self.send_mod, "wait_ready", new=AsyncMock(return_value=True)),
             patch.object(self.send_mod, "heartbeat_loop", new=AsyncMock()),
             patch.object(self.send_mod, "send_text", new=AsyncMock(return_value="MID1")),
             patch.object(self.send_mod, "wait_send_ack",

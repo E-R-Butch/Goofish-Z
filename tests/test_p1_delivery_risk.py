@@ -38,6 +38,7 @@ def _fake_message_transport(ack):
         patch.object(module, "get_access_token", return_value="synthetic-token"),
         patch.object(module, "connect", return_value=_FakeConnect()),
         patch.object(module, "register", new=AsyncMock()),
+        patch.object(module, "wait_ready", new=AsyncMock(return_value=True)),
         patch.object(module, "heartbeat_loop", new=AsyncMock()),
         patch.object(module, "send_text", new=AsyncMock(return_value="MID1")),
         patch.object(module, "wait_send_ack", new=AsyncMock(return_value=ack)),
