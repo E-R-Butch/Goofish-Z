@@ -23,7 +23,11 @@ from loguru import logger
 from goofish_z.core import Strategy, command
 from goofish_z.core.browser import goofish_page
 from goofish_z.core.errors import AuthRequiredError, GoofishError
-from goofish_z.core.item_page import NoDetailRequestError, read_item_page
+from goofish_z.core.item_page import (
+    NoDetailRequestError,
+    _decode_response,
+    read_item_page,
+)
 
 
 def _normalize_item_id(value: Any) -> str:
@@ -155,13 +159,18 @@ _FETCH_JS = r"""
       error_message: clean((response?.ret || []).join(' | ')),
     };
   }
-  return { ok: true };
+  // 原样带回整条 mtop 响应，交给 Python 的 _decode_response 做同一套契约校验。
+  return { ok: true, raw: response };
 })()
 """
 
 
 async def _fetch_via_page_mtop(page: Any, item_id: str) -> dict[str, Any]:
-    """兜底：页面没发过 detail 请求时，按旧实现注入一次 mtop 调用。"""
+    """兜底：页面没发过 detail 请求时，按旧实现注入一次 mtop 调用。
+
+    成功时返回**校验过的响应体**（与主链路共用 `_decode_response` 的契约：ret 全
+    SUCCESS、itemDO 结构、itemId 与请求一致），不再二次导航去等页面自己发请求。
+    """
     try:
         await page.wait_for_load_state("domcontentloaded", timeout=15000)
     except Exception as exc:  # noqa: BLE001 - 超时后仍尝试注入，由 mtop 就绪判定兜住
@@ -190,7 +199,10 @@ async def _fetch_via_page_mtop(page: Any, item_id: str) -> dict[str, Any]:
         raise AuthRequiredError("mtop 返回 session 过期：" + (err_msg or err_code))
     if err:
         raise GoofishError(f"mtop 调用失败 [{err_code or err}]: {err_msg or '无详情'}")
-    raise GoofishError("兜底注入未返回商品详情，请稍后重试")
+    raw = result.get("raw")
+    if result.get("ok") is not True or not isinstance(raw, dict):
+        raise GoofishError("兜底注入未返回可确认的商品详情响应")
+    return _decode_response(json.dumps(raw, ensure_ascii=False), item_id)
 
 
 async def _run(item_id: str) -> dict[str, Any]:
@@ -198,11 +210,10 @@ async def _run(item_id: str) -> dict[str, Any]:
         try:
             raw = await read_item_page(page, item_id)
         except NoDetailRequestError:
-            # 页面已加载但一次匹配请求都没发出：这才允许注入兜底。
+            # 页面已加载但一次匹配请求都没发出：这才允许注入兜底，
+            # 直接用注入拿到的响应，不再二次导航去等页面自己发请求。
             logger.debug("详情页未发出 detail 请求，回退注入式读取 item_id={}", item_id)
-            await _fetch_via_page_mtop(page, item_id)
-            # 注入调用成功后页面自身也会走一次详情接口；再观察一次响应拿完整字段。
-            raw = await read_item_page(page, item_id, timeout=15)
+            raw = await _fetch_via_page_mtop(page, item_id)
     return _view_result(raw, item_id)
 
 

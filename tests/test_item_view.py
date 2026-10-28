@@ -9,7 +9,7 @@ import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from goofish_z.commands.item import view as view_mod
+from goofish_z.commands.item import view as view_mod  # noqa: F401 - 供各用例引用
 from goofish_z.core.errors import (
     AuthRequiredError,
     GoofishError,
@@ -98,6 +98,10 @@ class FakePage:
         self.handlers: dict[str, list] = {}
         self.goto_calls: list[dict] = []
         self.goto_error: Exception | None = None
+        self.load_state_calls: list[str] = []
+        self.evaluate_calls: list = []
+        self.evaluate_result: object = None
+        self.evaluate_error: Exception | None = None
 
     def on(self, event: str, handler) -> None:
         self.handlers.setdefault(event, []).append(handler)
@@ -109,6 +113,15 @@ class FakePage:
         self.goto_calls.append({"url": url, **kwargs})
         if self.goto_error is not None:
             raise self.goto_error
+
+    async def wait_for_load_state(self, state: str, timeout: int | None = None) -> None:
+        self.load_state_calls.append(state)
+
+    async def evaluate(self, script: str, argument=None):
+        self.evaluate_calls.append(argument)
+        if self.evaluate_error is not None:
+            raise self.evaluate_error
+        return self.evaluate_result
 
     def emit(self, event: str, argument=None) -> None:
         for handler in list(self.handlers.get(event, [])):
@@ -353,8 +366,42 @@ class ViewResultTest(unittest.TestCase):
 
 
 class FallbackTest(unittest.IsolatedAsyncioTestCase):
-    async def test_injects_only_when_page_never_sent_request(self) -> None:
+    """兜底只在「页面一次匹配请求都没发」时启用，且必须真的把数据带回来。
+
+    历史缺陷（PR review 抓到的）：注入成功后 JS 只回 `{ok: true}`，Python 侧却无条件
+    抛「未返回商品详情」，兜底路径整体失效，等于把能读的页面变成必失败。
+    """
+
+    async def test_injected_success_returns_validated_detail(self) -> None:
         page = FakePage()
+        page.evaluate_result = {"ok": True, "raw": payload()}
+        raw = await view_mod._fetch_via_page_mtop(page, SID)
+        self.assertEqual(raw["data"]["itemDO"]["itemId"], SID)
+        self.assertEqual(page.evaluate_calls, [SID])
+
+    async def test_injected_response_is_validated_like_the_primary_path(self) -> None:
+        page = FakePage()
+        page.evaluate_result = {"ok": True, "raw": payload(item_id="0000000000009")}
+        with self.assertRaises(UpstreamError):
+            await view_mod._fetch_via_page_mtop(page, SID)
+
+    async def test_injected_missing_raw_is_error(self) -> None:
+        page = FakePage()
+        page.evaluate_result = {"ok": True}
+        with self.assertRaises(GoofishError):
+            await view_mod._fetch_via_page_mtop(page, SID)
+
+    async def test_injected_mtop_error_is_surfaced(self) -> None:
+        page = FakePage()
+        page.evaluate_result = {"error": "mtop-not-ready"}
+        with self.assertRaises(GoofishError) as ctx:
+            await view_mod._fetch_via_page_mtop(page, SID)
+        self.assertIn("mtop", str(ctx.exception))
+
+    async def test_run_uses_injected_result_without_second_navigation(self) -> None:
+        page = FakePage()
+        page.evaluate_result = {"ok": True, "raw": payload()}
+        calls: list[str] = []
 
         class CM:
             async def __aenter__(self):
@@ -363,28 +410,20 @@ class FallbackTest(unittest.IsolatedAsyncioTestCase):
             async def __aexit__(self, *exc):
                 return False
 
-        calls: list[str] = []
-
         async def fake_read(p, item_id, *, timeout=20):
             calls.append("read")
-            if len(calls) == 1:
-                raise NoDetailRequestError("未水合")
-            return payload()
-
-        async def fake_inject(p, item_id):
-            calls.append("inject")
+            raise NoDetailRequestError("未水合")
 
         with (
             patch.object(view_mod, "goofish_page", lambda: CM()),
             patch.object(view_mod, "read_item_page", fake_read),
-            patch.object(view_mod, "_fetch_via_page_mtop", fake_inject),
         ):
             result = await view_mod._run(SID)
-        self.assertEqual(calls, ["read", "inject", "read"])
+        self.assertEqual(calls, ["read"])
+        self.assertEqual(page.goto_calls, [])  # 兜底不再二次导航
         self.assertEqual(result["item_id"], SID)
 
     async def test_no_injection_when_response_was_observed(self) -> None:
-
         class CM:
             async def __aenter__(self):
                 return FakePage()
