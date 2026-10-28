@@ -37,6 +37,43 @@ def pids_for_profile(profile_dir: str) -> list[int]:
     return pids
 
 
+async def hold_then_cancel(open_page_and_hold, snapshot, timeout: float = 25.0):
+    """Propagate startup errors promptly and always await worker cancellation."""
+    task = asyncio.create_task(browser_mod.run_in_browser(open_page_and_hold))
+    try:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if task.done():
+                await task  # Preserve missing-Chrome errors for the opt-in skip.
+                raise AssertionError("浏览器请求在取消前意外结束")
+            state = await asyncio.get_running_loop().run_in_executor(None, snapshot)
+            if task.done():
+                await task
+                raise AssertionError("浏览器请求在取消前意外结束")
+            if state["profile"] and state["alive"] and pids_for_profile(state["profile"]):
+                return state["profile"]
+            # Wake immediately on failure rather than hiding it behind polling.
+            await asyncio.wait({task}, timeout=min(0.5, max(0, deadline - time.monotonic())))
+        raise AssertionError("常驻 Chrome 未能在超时内启动")
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            # An original startup/snapshot exception is propagated by the try body.
+            # Retrieve the task exception here to prevent an unhandled-task warning.
+            pass
+
+
+def chrome_unavailable(message: str) -> bool:
+    """Only an absent executable is skippable, not arbitrary channel failures."""
+    return "Executable doesn't exist" in message or (
+        "Chromium distribution" in message and "is not found at" in message
+    )
+
+
 @unittest.skipUnless(ENABLED, "real Chrome regression (set GOOFISH_TEST_REAL_CHROME=1)")
 class RealChromeTeardownCase(unittest.TestCase):
     def setUp(self):
@@ -64,29 +101,12 @@ class RealChromeTeardownCase(unittest.TestCase):
                 await page.goto("about:blank")
                 await asyncio.Event().wait()  # hold until cancelled
 
-        async def hold_then_cancel(timeout: float = 25.0):
-            task = asyncio.ensure_future(browser_mod.run_in_browser(open_page_and_hold))
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                state = await asyncio.get_running_loop().run_in_executor(None, self.snapshot)
-                if state["profile"] and state["alive"] and pids_for_profile(state["profile"]):
-                    break
-                await asyncio.sleep(0.5)
-            else:
-                task.cancel()
-                raise AssertionError("常驻 Chrome 未能在超时内启动")
-            task.cancel()
-            try:
-                await task
-            except BaseException:
-                pass
-            return state["profile"]
 
         try:
-            profile = asyncio.run(hold_then_cancel())
+            profile = asyncio.run(hold_then_cancel(open_page_and_hold, self.snapshot))
         except Exception as exc:  # noqa: BLE001
             message = str(exc)
-            if "Executable doesn't exist" in message or "channel" in message.lower():
+            if chrome_unavailable(message):
                 self.skipTest(f"runner 上没有可用的 Chrome channel：{message[:120]}")
             raise
         self.assertTrue(profile, "测试期间应拿到 profile 目录")
