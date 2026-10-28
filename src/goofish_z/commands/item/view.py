@@ -26,6 +26,7 @@ from goofish_z.core.errors import AuthRequiredError, GoofishError
 from goofish_z.core.item_page import (
     NoDetailRequestError,
     _decode_response,
+    _trip_on_risk,
     read_item_page,
 )
 
@@ -202,7 +203,11 @@ async def _fetch_via_page_mtop(page: Any, item_id: str) -> dict[str, Any]:
     raw = result.get("raw")
     if result.get("ok") is not True or not isinstance(raw, dict):
         raise GoofishError("兜底注入未返回可确认的商品详情响应")
-    return _decode_response(json.dumps(raw, ensure_ascii=False), item_id)
+    try:
+        return _decode_response(json.dumps(raw, ensure_ascii=False), item_id)
+    except GoofishError as exc:
+        _trip_on_risk(exc)  # 与主链路一致：风控响应必须落熔断
+        raise
 
 
 async def _run(item_id: str) -> dict[str, Any]:

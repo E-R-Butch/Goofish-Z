@@ -272,6 +272,43 @@ class ItemResponseTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(producer, return_exceptions=True)
             await observer.close()
 
+    async def test_risk_response_trips_circuit_breaker(self) -> None:
+        page = FakePage()
+        observer = ItemResponse(page, SID)
+        challenge = payload()
+        challenge["ret"] = ["FAIL_SYS_USER_VALIDATE::RGV587_ERROR::SM"]
+        try:
+            with patch("goofish_z.core.guard.trip") as trip:
+                waiter = asyncio.create_task(observer.wait(0.5))
+                await observer._capture(FakeResponse(detail_request(), challenge))
+                with self.assertRaises(RiskControlError):
+                    await asyncio.wait_for(waiter, 0.5)
+                trip.assert_called_once()
+                reason, kwargs = trip.call_args.args[0], trip.call_args.kwargs
+                self.assertIn("RGV587", reason)
+                self.assertEqual(kwargs.get("api"), "item.view.browser")
+        finally:
+            await observer.close()
+
+    async def test_non_risk_errors_do_not_trip(self) -> None:
+        for ret in (
+            ["FAIL_SYS_SESSION_EXPIRED::Session过期"],
+            ["FAIL_SYS_SERVICE_UNAVAILABLE::服务不可用"],
+        ):
+            page = FakePage()
+            observer = ItemResponse(page, SID)
+            raw = payload()
+            raw["ret"] = ret
+            try:
+                with patch("goofish_z.core.guard.trip") as trip:
+                    waiter = asyncio.create_task(observer.wait(0.5))
+                    await observer._capture(FakeResponse(detail_request(), raw))
+                    with self.assertRaises(GoofishError):
+                        await asyncio.wait_for(waiter, 0.5)
+                    trip.assert_not_called()
+            finally:
+                await observer.close()
+
     async def test_http_error_surfaces(self) -> None:
         page = FakePage()
         observer = ItemResponse(page, SID)
@@ -384,6 +421,16 @@ class FallbackTest(unittest.IsolatedAsyncioTestCase):
         page.evaluate_result = {"ok": True, "raw": payload(item_id="0000000000009")}
         with self.assertRaises(UpstreamError):
             await view_mod._fetch_via_page_mtop(page, SID)
+
+    async def test_injected_risk_response_trips(self) -> None:
+        page = FakePage()
+        raw = payload()
+        raw["ret"] = ["FAIL_SYS_USER_VALIDATE::RGV587_ERROR::SM"]
+        page.evaluate_result = {"ok": True, "raw": raw}
+        with patch("goofish_z.core.guard.trip") as trip:
+            with self.assertRaises(RiskControlError):
+                await view_mod._fetch_via_page_mtop(page, SID)
+            trip.assert_called_once()
 
     async def test_injected_missing_raw_is_error(self) -> None:
         page = FakePage()

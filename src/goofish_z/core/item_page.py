@@ -105,6 +105,25 @@ def _decode_response(text: str, item_id: str) -> dict:
     return raw
 
 
+def _trip_on_risk(exc: GoofishError) -> None:
+    """观察到的详情响应是风控时触发熔断。
+
+    冷却等级由 `guard.classify_level` 按**原始 ret 标记**判定，所以这里把 ret 原文
+    带过去，而不是用包装后的中文消息——否则等级只能落到最低档。注入兜底路径里
+    「页面是验证码/安全验证页」的 blocked 分支本来就会 trip，这条补的是主链路：
+    过去 `_run()` 不走 `guard.watch()`，CLI/MCP/HTTP 的错误处理也不 trip，
+    于是风控提示之后后续命令还能继续打同一个账号。
+    """
+    if not isinstance(exc, RiskControlError):
+        return
+    from .guard import trip
+
+    ret = (exc.raw or {}).get("ret") if isinstance(exc.raw, dict) else None
+    items = ret if isinstance(ret, list) else ([ret] if ret else [])
+    reason = " | ".join(str(value) for value in items) or str(exc)
+    trip(reason, api="item.view.browser")
+
+
 class ItemResponse:
     """消费本次观察到的那一个匹配请求的响应，迟到/旧响应不覆盖终态错误。"""
 
@@ -166,6 +185,8 @@ class ItemResponse:
                 self.last_error = exc
                 return
             result = exc
+        if isinstance(result, GoofishError):
+            _trip_on_risk(result)
         self.results.put_nowait(result)
 
     def _timeout_error(self) -> GoofishError:
@@ -233,6 +254,7 @@ async def read_item_page(page: Any, item_id: str, *, timeout: float = DETAIL_TIM
 
 __test__ = {
     "_matches_request": _matches_request,
+    "_trip_on_risk": _trip_on_risk,
     "_decode_response": _decode_response,
     "NoDetailRequestError": NoDetailRequestError,
 }
