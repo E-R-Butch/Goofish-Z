@@ -33,17 +33,38 @@ SETTLE_MS = int(os.environ.get("GOOFISH_LIVE_SETTLE_MS", "300"))
 # 预算内没变成商品标题才判 offline（避免把慢加载的好商品误杀）。
 BUDGET_S = float(os.environ.get("GOOFISH_LIVE_BUDGET_SECONDS", "3.5"))
 
+# 商品页标题是「宝贝标题_闲鱼」；登录页/验证页/目录页的标题不是这个形状。
+PRODUCT_TITLE_SUFFIX = "_闲鱼"
+# 命中这些文案说明落在登录或风控页，绝对不能当「在售」。
+VERIFICATION_MARKERS = ("验证码", "安全验证", "异常访问", "请登录")
+
 _PROBE_JS = """() => {
   const t = (document.body && document.body.innerText) || '';
   return { title: document.title || '', len: t.length, head: t.replace(/\\s+/g, ' ').slice(0, 120) };
 }"""
 
 
+def looks_like_verification(payload: dict[str, Any]) -> bool:
+    """落在登录/验证页？标题和正文开头任一带标记即算。"""
+    text = f"{payload.get('title') or ''} {payload.get('head') or ''}"
+    return any(marker in text for marker in VERIFICATION_MARKERS)
+
+
 def judge_item_page(payload: dict[str, Any]) -> str:
-    """商品页标题一旦变成宝贝标题就是活的；通用标题/空标题视为死链。"""
+    """判活必须看到**商品页证据**，而不是「标题非通用」。
+
+    访问商品页可能被导到登录页或安全验证页，那些页面的标题既不为空也不是站点通用
+    标题——只按「非通用标题即 live」会把它们判成在售，搜索还会给用户打上
+    `live_verified`。所以：验证页 → unknown；通用/空标题 → 死链；标题必须是
+    「宝贝标题_闲鱼」形状才算 live，其余（目录页、跳转页）一律 unknown。
+    """
     title = str(payload.get("title") or "").strip()
+    if looks_like_verification(payload):
+        return "unknown"
     if not title or title == GENERIC_TITLE:
         return "offline"
+    if not title.endswith(PRODUCT_TITLE_SUFFIX):
+        return "unknown"
     return "live"
 
 
@@ -67,7 +88,13 @@ async def _verify_batch(item_ids: list[str]) -> dict[str, str]:
                 while True:
                     await page.wait_for_timeout(SETTLE_MS)
                     payload = await page.evaluate(_PROBE_JS)
-                    state = judge_item_page(payload if isinstance(payload, dict) else {})
+                    payload = payload if isinstance(payload, dict) else {}
+                    if looks_like_verification(payload):
+                        # 探测被导到验证页：记熔断，按 unknown 处理（不判死、不判活）。
+                        from goofish_z.core.guard import trip
+
+                        trip("在售校验落在登录/验证页", api="item.live")
+                    state = judge_item_page(payload)
                     if state == "live" or time.monotonic() >= deadline:
                         break
                 states[item_id] = state
@@ -85,9 +112,12 @@ def check_items_live(item_ids: Iterable[str]) -> dict[str, str]:
             ids.append(text)
     if not ids:
         return {}
-    return asyncio.run(
-        run_in_browser(_verify_batch, ids[:MAX_VERIFY], timeout=20.0 + 10.0 * len(ids))
-    )
+    selected = ids[:MAX_VERIFY]
+    # 批量超时必须由每条的页面超时与探测预算推导：写死常数在调大
+    # GOOFISH_LIVE_BUDGET_SECONDS / PAGE_TIMEOUT_MS 之后会先把整批掐断。
+    per_item = PAGE_TIMEOUT_MS / 1000.0 + BUDGET_S + 2.0
+    budget = 10.0 + per_item * len(selected)
+    return asyncio.run(run_in_browser(_verify_batch, selected, timeout=budget))
 
 
 __test__ = {
