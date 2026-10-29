@@ -106,6 +106,7 @@ class FakePage:
         self.goto_calls: list[str] = []
         self._current: list[str] = []
         self.new_page_calls = 0
+        self.evaluate_calls = 0
 
     async def goto(self, url: str, **kwargs) -> None:
         item_id = url.rsplit("id=", 1)[-1]
@@ -118,6 +119,7 @@ class FakePage:
         await asyncio.sleep(0)
 
     async def evaluate(self, script: str):
+        self.evaluate_calls += 1
         title = self._current.pop(0) if len(self._current) > 1 else self._current[0]
         return {"title": title, "len": 100}
 
@@ -159,8 +161,43 @@ class VerifyBatchTest(unittest.IsolatedAsyncioTestCase):
         with patch("goofish_z.core.guard.trip") as trip:
             states = await self._run(page, ["111"])
         self.assertEqual(states, {"111": "unknown"})
-        trip.assert_called()
+        trip.assert_called_once()
         self.assertEqual(trip.call_args.kwargs.get("api"), "item.live")
+
+    async def test_verification_stops_before_second_item_or_another_probe(self) -> None:
+        # 即便下一次探测会变成商品标题，命中验证后也不能继续探测或访问下一条。
+        page = FakePage({"111": ["安全验证", "在售A_闲鱼"], "222": ["在售B_闲鱼"]})
+        with patch("goofish_z.core.guard.trip") as trip:
+            states = await self._run(page, ["111", "222"])
+        self.assertEqual(states, {"111": "unknown", "222": "unknown"})
+        self.assertEqual(page.goto_calls, ["111"])
+        self.assertEqual(page.evaluate_calls, 1)
+        trip.assert_called_once_with("在售校验落在登录/验证页", api="item.live")
+
+    async def test_verification_preserves_completed_states_and_marks_rest_unknown(self) -> None:
+        page = FakePage({
+            "111": ["在售A_闲鱼"],
+            "222": [live.GENERIC_TITLE],
+            "333": ["安全验证"],
+            "444": ["在售B_闲鱼"],
+            "555": [live.GENERIC_TITLE],
+        })
+        with patch("goofish_z.core.guard.trip") as trip:
+            states = await self._run(page, ["111", "222", "333", "444", "555"])
+        self.assertEqual(states, {
+            "111": "live", "222": "offline", "333": "unknown",
+            "444": "unknown", "555": "unknown",
+        })
+        self.assertEqual(page.goto_calls, ["111", "222", "333"])
+        trip.assert_called_once()
+
+    async def test_verification_stops_batch_even_if_guard_recording_fails(self) -> None:
+        page = FakePage({"111": ["安全验证"], "222": ["在售_闲鱼"]})
+        with patch("goofish_z.core.guard.trip", side_effect=OSError("state unavailable")):
+            states = await self._run(page, ["111", "222"])
+        self.assertEqual(states, {"111": "unknown", "222": "unknown"})
+        self.assertEqual(page.goto_calls, ["111"])
+        self.assertEqual(page.evaluate_calls, 1)
 
     async def test_single_failure_is_unknown_and_does_not_abort_batch(self) -> None:
         page = FakePage({"222": ["在售_闲鱼"]}, fail={"111"})

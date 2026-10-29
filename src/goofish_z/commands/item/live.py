@@ -73,10 +73,11 @@ _judge = judge_item_page
 
 
 async def _verify_batch(item_ids: list[str]) -> dict[str, str]:
-    """串行核对（同一页面复用）；单条异常归 unknown，不影响其它条。"""
-    states: dict[str, str] = {}
+    """串行核对；普通单条异常归 unknown，登录/验证页立即停止整批。"""
+    states: dict[str, str] = dict.fromkeys(item_ids, "unknown")
     async with warm_page() as page:
         for item_id in item_ids:
+            stop_batch = False
             try:
                 await page.goto(
                     f"https://www.goofish.com/item?id={item_id}",
@@ -90,16 +91,22 @@ async def _verify_batch(item_ids: list[str]) -> dict[str, str]:
                     payload = await page.evaluate(_PROBE_JS)
                     payload = payload if isinstance(payload, dict) else {}
                     if looks_like_verification(payload):
-                        # 探测被导到验证页：记熔断，按 unknown 处理（不判死、不判活）。
+                        # 命中验证立即停批：保留已完成结果，当前与未访问项仍为 unknown。
+                        # 先置停止标记，避免熔断状态写入失败后被单条异常处理放行。
+                        stop_batch = True
+                        state = "unknown"
                         from goofish_z.core.guard import trip
 
                         trip("在售校验落在登录/验证页", api="item.live")
+                        break
                     state = judge_item_page(payload)
                     if state == "live" or time.monotonic() >= deadline:
                         break
                 states[item_id] = state
             except Exception:  # noqa: BLE001 - 单条失败不能带崩整批
                 states[item_id] = "unknown"
+            if stop_batch:
+                break
     return states
 
 
