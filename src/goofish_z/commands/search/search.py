@@ -49,6 +49,8 @@ MAX_SKU_WAIT_SECONDS = 12.0
 PAGE_SIZE = 30
 # 等首张卡片的上限：卡片出现即走，正常 0.3~5s，慢网络封顶 8s
 CARDS_TIMEOUT_MS = int(os.environ.get("GOOFISH_SEARCH_CARDS_TIMEOUT_MS", "8000"))
+# 在售校验最多核验最前面 N 条：每条约 4–5s，且必须串行复用同一页面。
+MAX_VERIFY_TOP = 8
 
 
 def _normalize_limit(value: Any) -> int:
@@ -570,6 +572,8 @@ def search(
     max_price: float | None = None,
     filter_low_value: bool = True,
     resolve_skus: bool = False,
+    verify_live: bool = False,
+    verify_top: int = 5,
 ) -> dict[str, Any]:
     # 限流：搜索间隔 30s（防接口级风控）
     from goofish_z.core.guard import check as guard_check
@@ -654,7 +658,36 @@ def search(
             passed_price.append(it)
         result["items"] = passed_price
         result["count"] = len(passed_price)
-        
+
+    # 在售校验：搜索列表会保留已下架/已删除的卡片（卡片本身无任何标记），
+    # 逐条渲染商品页确认还能打开，把死链剔掉（默认只校验最前面 verify_top 条）。
+    if verify_live and result.get("items"):
+        from goofish_z.commands.item.live import check_items_live
+
+        top_n = max(1, min(int(verify_top or 5), MAX_VERIFY_TOP))
+        probe_ids = [
+            str(it.get("item_id") or "")
+            for it in result["items"][:top_n]
+            if str(it.get("item_id") or "").isdigit()
+        ]
+        states = check_items_live(probe_ids)
+        kept: list[dict[str, Any]] = []
+        offline: list[dict[str, Any]] = []
+        for it in result["items"]:
+            state = states.get(str(it.get("item_id") or ""), "")
+            if state == "offline":
+                offline.append(_filtered_item(it, ["商品已下架或已删除（渲染核验）"]))
+                continue
+            if state == "live":
+                it["live_verified"] = True
+            kept.append(it)
+        result["items"] = kept
+        result["count"] = len(kept)
+        result["offline_dropped"] = len(offline)
+        if offline:
+            result.setdefault("blocked", []).extend(offline)
+            result["blocked_count"] = result.get("blocked_count", 0) + len(offline)
+
     return result
 
 
