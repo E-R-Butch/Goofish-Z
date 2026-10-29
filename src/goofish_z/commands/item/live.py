@@ -122,7 +122,8 @@ def check_items_live(item_ids: Iterable[str]) -> dict[str, str]:
     selected = ids[:MAX_VERIFY]
     # 批量超时必须由每条的页面超时与探测预算推导：写死常数在调大
     # GOOFISH_LIVE_BUDGET_SECONDS / PAGE_TIMEOUT_MS 之后会先把整批掐断。
-    per_item = PAGE_TIMEOUT_MS / 1000.0 + BUDGET_S + 2.0
+    # 期限在轮询等待之后才检查，最后一轮还可能多等一个完整 SETTLE_MS。
+    per_item = PAGE_TIMEOUT_MS / 1000.0 + BUDGET_S + SETTLE_MS / 1000.0 + 2.0
     budget = 10.0 + per_item * len(selected)
     return asyncio.run(run_in_browser(_verify_batch, selected, timeout=budget))
 

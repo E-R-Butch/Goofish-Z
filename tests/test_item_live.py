@@ -83,6 +83,23 @@ class CheckItemsLiveTest(unittest.TestCase):
         # 每条至少要 30s 页面超时 + 10s 探测预算；写死的 20+10n 会先把整批掐断
         self.assertGreaterEqual(seen["timeout"], 3 * (30.0 + 10.0))
 
+    def test_batch_timeout_includes_configured_poll_interval(self) -> None:
+        seen: dict[str, float] = {}
+
+        async def fake_runner(factory, *args, **kwargs):
+            seen["timeout"] = kwargs["timeout"]
+            return {}
+
+        with patch.object(live, "run_in_browser", fake_runner), \
+                patch.object(live, "PAGE_TIMEOUT_MS", 500), \
+                patch.object(live, "BUDGET_S", 0.1), \
+                patch.object(live, "SETTLE_MS", 10000), \
+                patch.object(live, "MAX_VERIFY", 8):
+            live.check_items_live([str(100 + index) for index in range(8)])
+        # 期限在 wait_for_timeout 之后才检查；最后一次轮询可跨过整个 SETTLE_MS。
+        # 固定每条 +2s 只给整批 30.8s，但这里光轮询等待就需要 80s。
+        self.assertGreaterEqual(seen["timeout"], 8 * (0.5 + 0.1 + 10.0))
+
     def test_non_digit_ids_are_rejected_before_browser(self) -> None:
         seen: list[list[str]] = []
 
