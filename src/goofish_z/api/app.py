@@ -106,6 +106,8 @@ def api_search(
     min_price: float | None = Query(None, ge=0, description="最低价格过滤"),
     max_price: float | None = Query(None, ge=0, description="最高价格过滤"),
     resolve_skus: bool = Query(False, description="是否受限拉取详情自动补充真实 SKU"),
+    verify_live: bool = Query(False, description="是否逐条渲染商品页剔除已下架/已删除的链接"),
+    verify_top: int = Query(5, ge=1, le=8, description="在售校验的条数上限"),
 ) -> JSONResponse:
     """搜索闲鱼商品。"""
     params = {"query": q, "limit": limit, "page": page}
@@ -119,6 +121,9 @@ def api_search(
         params["max_price"] = max_price
     if resolve_skus:
         params["resolve_skus"] = True
+    if verify_live:
+        params["verify_live"] = True
+        params["verify_top"] = verify_top
     result = _call_command("search.items", params)
     return JSONResponse(result)
 
