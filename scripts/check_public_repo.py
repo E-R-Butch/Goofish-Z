@@ -60,7 +60,6 @@ PRIVATE_ABSOLUTE_PATHS = (
 LONG_TEST_NUMBER = re.compile(r"(?<!\d)(\d{10,15})(?!\d)")
 LONG_NUMBER_EXEMPT_PATHS = {
     "src/goofish_z/static/goofish_js_version_2.js",
-    "static/goofish_js_version_2.js",
 }
 MAX_PUBLIC_FILE_SIZE = 2_000_000
 ALLOWED_TEXT_SUFFIXES = {
@@ -127,8 +126,8 @@ def text_violations(relative: str, text: str) -> list[str]:
         violations.append("private absolute filesystem path")
 
     # Long platform/account/listing identifiers are private-data-shaped even in
-    # documentation.  The two vendored signing scripts contain harmless numeric
-    # constants and are the only reviewed exception.  All-zero values remain
+    # documentation.  The packaged signing script contains harmless numeric
+    # constants and is the only reviewed exception.  All-zero values remain
     # available for unmistakably synthetic fixtures.
     if relative not in LONG_NUMBER_EXEMPT_PATHS:
         realistic = [match.group(1) for match in LONG_TEST_NUMBER.finditer(text)]
