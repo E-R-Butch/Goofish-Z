@@ -291,7 +291,6 @@ class PriceValueEngine:
             and self.arbiter
             and self.arbiter.configured
             and not is_definitive_blocked
-            and _targets_gpu(active_query)  # JEV 状态机为显卡语义；非显卡搜索不做 LLM 升级
         ):
             escalate = False
             escalate_reason = ""
@@ -301,15 +300,23 @@ class PriceValueEngine:
                 escalate = True
                 escalate_reason = "多SKU规格复杂，交由LLM精准对齐真实目标价格"
 
-            # 存疑条件 B: 价格异常偏低(低于中位数78%)且在硬件区间(>=500)，疑似大漏或精妙话术陷阱
-            elif effective_price is not None and 500.0 <= effective_price < base * 0.78:
+            # 存疑条件 B: 价格异常偏低(低于中位数78%)且在有效区间，疑似大漏或精妙话术陷阱
+            elif effective_price is not None and (
+                (base >= 30.0 and 20.0 <= effective_price < base * 0.78)
+                or (base < 30.0 and effective_price < base * 0.60)
+            ):
                 escalate = True
                 escalate_reason = f"深水高性价比捡漏(标价¥{effective_price:.0f}远低于大盘¥{base:.0f})，LLM防伪与暗病复核"
 
-            # 存疑条件 C: 包含复杂专业魔改或服务争议词 (防止正则误杀，交由LLM上下文语义判决)
-            elif any(w in text for w in ("改4090", "改3090", "换皮", "代改", "魔改", "双显卡", "租赁", "出租", "教程")):
+            # 存疑条件 C: 包含复杂专业魔改或服务/引流争议词 (交由LLM上下文语义判决)
+            elif any(w in text for w in ("改4090", "改3090", "换皮", "代改", "魔改", "双显卡", "租赁", "出租", "教程", "定金", "订金", "非实价", "私聊", "整机", "主机", "配置单")):
                 escalate = True
-                escalate_reason = "涉及深度改装/复杂硬件做工/争议词汇，LLM语义定性与精准做工估值"
+                escalate_reason = "涉及改装/整机混入/争议词汇，LLM语义定性与精准做工估值"
+
+            # 存疑条件 D: 价格严重偏高(超基准2.2倍)或疑似跨类/整机冒充单件
+            elif effective_price is not None and has_baseline and base >= 50.0 and effective_price > base * 2.2:
+                escalate = True
+                escalate_reason = f"价格异常倒挂偏高(标价¥{effective_price:.0f}远超基准¥{base:.0f})，LLM排查整机或跨类混入"
 
             if escalate:
                 if not self._llm_slot_available():

@@ -280,7 +280,7 @@ class TestPriceValueEngineReview(unittest.TestCase):
         self.assertIn("512G超大容量", upgrade.tags)
         self.assertFalse(upgrade.is_blocked)
 
-    def test_llm_escalation_only_for_gpu_queries(self):
+    def test_llm_escalation_for_all_queries(self):
         from unittest.mock import Mock
 
         from goofish_z.price_value_engine import PriceValueEngine
@@ -289,8 +289,10 @@ class TestPriceValueEngineReview(unittest.TestCase):
         fake.configured = True
         fake.judge_jev = Mock(return_value=None)
         engine.arbiter = fake
+        # 全品类低价均可升级 L2
         engine.assess({"title": "iPhone 15 128G 2000出", "price": "¥2000"}, query="iPhone 15", batch_median=3000)
-        fake.judge_jev.assert_not_called()
+        fake.judge_jev.assert_called()
+        fake.judge_jev.reset_mock()
         engine.assess({"title": "RTX4090 24G 1600 急出 功能正常", "price": "¥1600"}, query="RTX4090", batch_median=3000)
         fake.judge_jev.assert_called()
 

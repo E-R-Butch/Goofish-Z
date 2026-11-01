@@ -68,6 +68,18 @@ def _item_id_from_url(url: str) -> str:
 
 # 非 GPU 产品线型号（iPhone 15 / iPad mini 6 / 小米14 …）：判断查询是否指向具体型号，
 # 决定是否计算同款中位数并启用 VMI 判定。
+
+# PC 核心硬件型号（主板芯片组、计算卡/工作站、服务器内存、CPU等）
+_PC_HARDWARE_MODEL_RE = re.compile(
+    r"(?:"
+    r"\b[BXZAHQ]\d{3,4}[A-Za-z]*(?:-[A-Za-z0-9]+)?\b"
+    r"|\b(?:Pro\s*\d{4,5}[A-Za-z]?|RTX\s*(?:A\d{4}|\d{4}\s*Ada)|[AHVT]\d{2,3}|MI\d{2,3}|Tesla\s*[TP]\d{1,2}|CMP\s*\d+HX)\b"
+    r"|\b(?:DDR[345].*?(?:RECC|REG|ECC)|(?:RECC|REG\s*ECC)\b)"
+    r"|\b(?:i[3579][ -]?\d{4,5}[A-Za-z]*|r[3579][ -]?\d{4}[A-Za-z]*|E[357][ -]?\d{4}[A-Za-z0-9]*|Xeon|EPYC|Threadripper|\d{4}(?:X3D|[XxFfGgTt]))\b"
+    r")",
+    re.IGNORECASE,
+)
+
 _NON_GPU_MODEL_RE = re.compile(
     r"(?:iphone|ipad|ipod|imac|macbook|airpods?|apple\s*watch|galaxy|pixel|redmi|honor|huawei|mate|nova|thinkpad|legion|yoga|surface|switch|ps[45]|xbox)"
     r"(?:\s+(?:mini|air|pro|max|plus|ultra|note|book|series))?[\s\-]*\d{1,2}(?!\d)"
@@ -88,25 +100,28 @@ def _mentions_specific_product(query: str) -> bool:
     q = str(query or "")
     if extract_gpu_models(q):
         return True
-    return bool(_NON_GPU_MODEL_RE.search(q))
+    return bool(_NON_GPU_MODEL_RE.search(q) or _PC_HARDWARE_MODEL_RE.search(q))
 
 
 # 中位数样本过滤：低价配件样本与不同变体样本不参与基准推导 (防止脏样本拉偏大盘)
 _MEDIAN_NOISE_RE = re.compile(
     r"(?:手机壳|保护壳|保护套|手机套|硅胶套|清水套|钢化膜|贴膜|手机膜|镜头膜|支架|挂绳|手机链|腕带|表带|"
     r"数据线|充电线|充电头|充电器|空盒|包装盒|说明书|贴纸|外壳|屏幕总成|拆机屏|"
-    r"散热器|散热模组|散热风扇|水冷头|延长线|转接线|空板|料板|无核心|无显存|背板|挡板)",
+    r"散热器|散热模组|散热风扇|水冷头|延长线|转接线|空板|料板|无核心|无显存|背板|挡板|台式主机|游戏备用机|电脑主机|台式电脑整机|海景房台式主机|高端主机|AI\s*主机)",
     re.IGNORECASE,
 )
 _VARIANT_TOKEN_RE = re.compile(r"(?:^|[^a-z])(pro|max|plus|ultra|mini|air)(?:[^a-z]|$)", re.IGNORECASE)
 
 
 def _non_gpu_product_key(text: str) -> str:
-    """非 GPU 产品线的「型号+代数」键 (iPhone 15 / 小米14 / iPad mini 6)，用于基准分池。"""
+    """非 GPU 产品线的「型号+代数」键，用于基准分池。"""
     m = _NON_GPU_MODEL_RE.search(str(text or ""))
-    if not m:
-        return ""
-    return re.sub(r"[\s\-]+", "", m.group(0)).lower()
+    if m:
+        return re.sub(r"[\s\-]+", "", m.group(0)).lower()
+    m_pc = _PC_HARDWARE_MODEL_RE.search(str(text or ""))
+    if m_pc:
+        return re.sub(r"[\s\-]+", "", m_pc.group(0)).lower()
+    return ""
 
 
 def _median_candidates(query: str, entries: list[tuple[dict, float]]) -> list[tuple[dict, float]]:

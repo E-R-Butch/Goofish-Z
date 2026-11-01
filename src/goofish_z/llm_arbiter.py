@@ -93,11 +93,11 @@ HARDWARE_MOD_MAP = {
 }
 
 BLOCK_TYPE_MAP = {
-    0: (False, "目标型号正品整卡"),
-    1: (True, "周边零配件/散热器/延长线/空板(非整卡)"),
-    2: (True, "虚拟教程/驱动软件/算力租赁/代工服务"),
+    0: (False, "目标型号正品整件"),
+    1: (True, "周边零配件/散热器/空盒/拆件料板(非整件主体)"),
+    2: (True, "虚拟教程/驱动软件/租赁服务/定金专拍"),
     3: (True, "纯展示/小作文/已出勿拍留念"),
-    4: (True, "型号不符/货不对板/借词引流的其它非目标型号"),
+    4: (True, "型号不符/跨代借词/货不对板/非目标型号/整机混入"),
 }
 
 
@@ -120,21 +120,21 @@ class LLMVerdict:
     tags: list[str] = field(default_factory=list)
 
 
-SYSTEM_PROMPT = """你是一个硬件分类状态机。严格依据商品信息输出仅包含三个字段的极简 JSON，严禁输出任何分析理由或多余文字。
+SYSTEM_PROMPT = """你是一个二手交易商品分类与防伪状态机。严格依据商品信息输出仅包含三个字段的极简 JSON，严禁输出任何多余分析文字或Markdown。
 字段定义：
-- "t": 标的分类代号(严格限0~4共5个互斥状态):
-  0 = 买家搜索的目标型号整卡硬件
-  1 = 周边配件/延长线/散热器/空板
-  2 = 算力租赁/部署教程/驱动软件
-  3 = 纯展示/已出勿拍留念
-  4 = 型号不符/货不对板/借词引流的其它非目标型号(如搜90HX出1660S、笔记本等)
-- "p": 买家购买目标规格真实所需支付金额(数字)。若标价真实单一或无多SKU套路填0；若存在多SKU阴阳引流填目标规格实际价格
-- "m": 硬件档位代号(严格限0~4共5个状态):
-  0 = 标准做工三风扇
-  1 = 豪华底板(3090底板/90HX补电容满血)
-  2 = 巨型散热改装(4090散热模组/水冷)
-  3 = 涡轮公版(服务器高噪音)
-  4 = 一线非公旗舰(火神/魔龙/TUF)
+- "t": 标的分类判定代号(严格限0~4共5个互斥整数):
+  0 = 买家搜索的目标型号正品主体/整件硬件（品类、型号、核心代际完全匹配）
+  1 = 周边零配件/散热器/空盒/线材/拆机料板/残卷（非完整可用主体）
+  2 = 虚拟服务/教程软件/租赁/定金专拍/代工
+  3 = 纯展示/小作文/已出勿拍留念/求购帖
+  4 = 型号不符/跨代借词/货不对板/整机混入/阴阳引流低配（如搜B650出B760或整机、搜RECC出笔记本条、搜5060ti出多卡起步价或非实价）
+- "p": 买家购买目标规格真实所需支付金额(数字)。若标价真实单一或无多SKU套路填0；若存在多SKU阴阳引流/需补差价/定金，填目标规格真实到手价
+- "m": 成色与用料档位(严格限0~4共5个整数):
+  0 = 标准/正常成色/普通三风扇或标准版
+  1 = 豪华用料/高配/满血改件/原装箱说全充新(如3090底板/90HX补电容/带原盒)
+  2 = 顶级做工/旗舰非公/高规格改装(如4090巨型散热/分体水冷)
+  3 = 噪音大/瑕疵/工控涡轮/轻微暗病折价
+  4 = 一线旗舰非公品牌(火神/魔龙/超龙/ROG/TUF/超级雕)
 
 输出示例：{"t":0,"p":0,"m":1}"""
 
@@ -310,7 +310,8 @@ class LLMArbiter:
             sku_items = [f"{s.get('name')}:{s.get('price')}" for s in skus[:4]]
             sku_summary = f"SKUs:[{', '.join(sku_items)}]"
 
-        user_content = f"目标:{query} | 标价:{price_raw} | 标题:{title} | {sku_summary} | 描述:{desc[:80] if desc else ''}"
+        base_str = f" | 大盘基准:¥{baseline_price:.0f}" if baseline_price and baseline_price > 0 else ""
+        user_content = f"目标:{query}{base_str} | 标价:{price_raw} | 标题:{title} | {sku_summary} | 描述:{desc[:80] if desc else ''}"
 
         req_body = {
             "model": self.model,
@@ -366,14 +367,29 @@ class LLMArbiter:
                     pass
             effective_p = real_p if real_p > 0 else raw_p_num
 
-            # 估值加成 (兼容 90HX 补电容与 3080 魔改)
-            is_90hx = "90HX" in query.upper()
-            if m_tier == 1:
-                mod_name = "已补电容(满血x16)" if is_90hx else "3090豪华PCB"
-                mod_delta = 40.0 if is_90hx else 120.0
-                mod_desc = "已补满血x16电容(+¥40)" if is_90hx else "3090级豪华PCB加持(+¥120)"
+            # 估值加成 (兼容 90HX 补电容、3080 魔改及非显卡通用商品)
+            from goofish_z.search_quality import extract_gpu_models
+
+            q_upper = str(query or "").upper()
+            is_gpu = bool(extract_gpu_models(q_upper)) or any(k in q_upper for k in ("显卡", "GPU", "HX"))
+            if is_gpu:
+                is_90hx = "90HX" in q_upper
+                if m_tier == 1:
+                    mod_name = "已补电容(满血x16)" if is_90hx else "3090豪华PCB"
+                    mod_delta = 40.0 if is_90hx else 120.0
+                    mod_desc = "已补满血x16电容(+¥40)" if is_90hx else "3090级豪华PCB加持(+¥120)"
+                else:
+                    mod_name, mod_delta, mod_desc = HARDWARE_MOD_MAP.get(m_tier, ("标准", 0.0, ""))
             else:
-                mod_name, mod_delta, mod_desc = HARDWARE_MOD_MAP.get(m_tier, ("标准", 0.0, ""))
+                generic_map = {
+                    0: ("标准", 0.0, ""),
+                    1: ("高配/箱说全", min(50.0, baseline_price * 0.1), "高规格用料/原包装齐全"),
+                    2: ("旗舰用料", min(100.0, baseline_price * 0.15), "旗舰顶级用料"),
+                    3: ("瑕疵折价", -min(50.0, baseline_price * 0.15), "成色瑕疵或高噪音折价"),
+                    4: ("一线品牌", min(50.0, baseline_price * 0.1), "一线旗舰品牌加成"),
+                }
+                mod_name, mod_delta, mod_desc = generic_map.get(m_tier, ("标准", 0.0, ""))
+
             fair_val = (baseline_price + mod_delta) if not is_blocked else 0.0
             vmi = (fair_val / effective_p) if effective_p > 0 else 0.0
 
